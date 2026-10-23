@@ -13,14 +13,19 @@ interface Props {
 }
 
 function timeAgo(unixSeconds: number): string {
-  const diffMs = Date.now() - unixSeconds * 1000;
-  const mins = Math.round(diffMs / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
+  const mins = Math.max(0, Math.floor((Date.now() - unixSeconds * 1000) / 60000));
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "Yesterday";
+  if (days < 7) return `${days} days ago`;
+  return new Date(unixSeconds * 1000).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 export default function ProjectsPanel({
@@ -43,14 +48,15 @@ export default function ProjectsPanel({
   return (
     <div className="panel">
       <p className="hint">
-        Save the current diagram (all sub-diagrams, palette, style rules) to this machine's local
-        database so it survives a backend restart and can be reopened later.
+        Save your diagram to pick up where you left off. Each project includes all
+        sub-diagrams, your palette, and style rules.
       </p>
       <label className="field">
         <span>Name</span>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Untitled" />
       </label>
       <button
+        type="button"
         className="btn btn-primary"
         disabled={busy || !name.trim()}
         onClick={() => onSave(name.trim())}
@@ -58,25 +64,39 @@ export default function ProjectsPanel({
         {currentProjectId ? "Save" : "Save as new"}
       </button>
       {currentProjectId && (
-        <button className="btn" disabled={busy || !name.trim()} onClick={() => onSaveAsCopy(name.trim())}>
+        <button type="button" className="btn" disabled={busy || !name.trim()} onClick={() => onSaveAsCopy(name.trim())}>
           Save as a copy
         </button>
       )}
 
-      <p className="hint" style={{ marginTop: 16 }}>
+      <h3 className="section-heading" style={{ marginTop: 16 }}>
         Saved projects
-      </p>
-      {projects.length === 0 && <p className="hint">Nothing saved yet.</p>}
+      </h3>
+      {projects.length === 0 && <p className="hint">Your saved projects will appear here. Give this diagram a name to save it.</p>}
       <ul className="project-list">
         {projects.map((p) => (
           <li key={p.id} className={p.id === currentProjectId ? "active" : ""}>
-            <div className="project-row-main" onClick={() => onLoad(p.id, p.name)}>
-              <span className="project-name">{p.name}</span>
-              <span className="project-time">{timeAgo(p.updated_at)}</span>
-            </div>
             <button
+              type="button"
+              className="btn project-row-main"
+              aria-label={`Open project ${p.name}`}
+              aria-current={p.id === currentProjectId ? "true" : undefined}
+              onClick={() => onLoad(p.id, p.name)}
+            >
+              <span className="project-name">{p.name}</span>
+              <time
+                className="project-time"
+                dateTime={new Date(p.updated_at * 1000).toISOString()}
+                title={`Updated ${new Date(p.updated_at * 1000).toLocaleString()}`}
+              >
+                {timeAgo(p.updated_at)}
+              </time>
+            </button>
+            <button
+              type="button"
               className="btn btn-danger project-delete"
-              title="Delete"
+              title={`Delete ${p.name}`}
+              aria-label={`Delete project ${p.name}`}
               onClick={() => {
                 if (window.confirm(`Delete "${p.name}"? This can't be undone.`)) onDelete(p.id);
               }}

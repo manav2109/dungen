@@ -6,6 +6,7 @@ export const SIDEBAR_DEFAULT = 340;
 
 interface Props<T extends string> {
   tabs: [T, string, React.ReactNode][]; // [key, full label, icon for the collapsed rail]
+  groups?: { label: string; keys: T[] }[];
   tab: T;
   onTabChange: (t: T) => void;
   width: number;
@@ -17,6 +18,7 @@ interface Props<T extends string> {
 
 export default function Sidebar<T extends string>({
   tabs,
+  groups,
   tab,
   onTabChange,
   width,
@@ -26,6 +28,8 @@ export default function Sidebar<T extends string>({
   children,
 }: Props<T>) {
   const dragging = useRef(false);
+  const navigation = groups || tabs.map(([key, label]) => ({ label, keys: [key] }));
+  const activeGroup = navigation.find((group) => group.keys.includes(tab));
 
   const onPointerMove = useCallback(
     (ev: PointerEvent) => {
@@ -52,6 +56,7 @@ export default function Sidebar<T extends string>({
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", stopDrag);
       window.removeEventListener("pointercancel", stopDrag);
+      document.body.classList.remove("resizing-col");
     };
   }, [onPointerMove, stopDrag]);
 
@@ -74,20 +79,23 @@ export default function Sidebar<T extends string>({
         >
           ‹
         </button>
-        {tabs.map(([key, label, icon]) => (
+        {navigation.map((group) => {
+          const [key, , icon] = tabs.find(([key]) => key === group.keys[0])!;
+          return (
           <button
-            key={key}
-            className={`rail-tab ${tab === key ? "active" : ""}`}
-            title={label}
-            aria-label={label}
+            key={group.label}
+            className={`rail-tab ${group.keys.includes(tab) ? "active" : ""}`}
+            title={group.label}
+            aria-label={group.label}
+            aria-pressed={group.keys.includes(tab)}
             onClick={() => {
-              onTabChange(key);
+              onTabChange(group.keys.includes(tab) ? tab : key);
               onSetCollapsed(false);
             }}
           >
             {icon}
           </button>
-        ))}
+        ); })}
       </aside>
     );
   }
@@ -99,23 +107,25 @@ export default function Sidebar<T extends string>({
         onPointerDown={startDrag}
         onDoubleClick={() => onWidthChange(SIDEBAR_DEFAULT)}
         role="separator"
+        tabIndex={0}
+        aria-valuemin={SIDEBAR_MIN}
+        aria-valuemax={SIDEBAR_MAX}
+        aria-valuenow={width}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+            event.preventDefault();
+            onWidthChange(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width + (event.key === "ArrowLeft" ? 20 : -20))));
+          } else if (event.key === "Home") {
+            event.preventDefault();
+            onWidthChange(SIDEBAR_DEFAULT);
+          }
+        }}
         aria-orientation="vertical"
         aria-label="Resize panel (double-click to reset)"
         title="Drag to resize · double-click to reset"
       />
       <div className="sidebar-head">
-        <div className="tab-bar">
-          {tabs.map(([key, label]) => (
-            <button
-              key={key}
-              className={tab === key ? "active" : ""}
-              onClick={() => onTabChange(key)}
-              aria-pressed={tab === key}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <div className="sidebar-heading"><span className="eyebrow">Workspace</span><h2>{activeGroup?.label}</h2></div>
         <button
           className="rail-toggle"
           onClick={() => onSetCollapsed(true)}
@@ -126,6 +136,25 @@ export default function Sidebar<T extends string>({
           ›
         </button>
       </div>
+      <nav className="sidebar-nav" aria-label="Workspace panels">
+        {navigation.map((group) => {
+          const active = group.keys.includes(tab);
+          const primary = tabs.find(([key]) => key === group.keys[0]);
+          return <button key={group.label} className={active ? "active" : ""} aria-pressed={active} onClick={() => onTabChange(active ? tab : group.keys[0])} title={group.label}>{primary?.[2]}<span>{group.label}</span></button>;
+        })}
+      </nav>
+      {groups && (activeGroup?.keys.length || 0) > 1 && <div className="panel-subnav" role="group" aria-label="Panel tools">
+          {tabs.filter(([key]) => activeGroup?.keys.includes(key)).map(([key, label]) => (
+            <button
+              key={key}
+              className={tab === key ? "active" : ""}
+              onClick={() => onTabChange(key)}
+              aria-pressed={tab === key}
+            >
+              {label}
+            </button>
+          ))}
+      </div>}
       <div className="sidebar-body">{children}</div>
     </aside>
   );

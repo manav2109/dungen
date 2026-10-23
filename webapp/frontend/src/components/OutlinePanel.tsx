@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { LineOut, ShapeOut } from "../api";
+import { humanLabel } from "../uiLabels";
 
 interface Props {
   shapes: ShapeOut[];
@@ -29,7 +30,7 @@ export default function OutlinePanel({ shapes, lines, onGenerate }: Props) {
         <select value={entityType} onChange={(e) => setEntityType(e.target.value)}>
           {shapes.map((s) => (
             <option key={s.entity_type} value={s.entity_type}>
-              {s.entity_type}
+              {humanLabel(s.entity_type)}
             </option>
           ))}
         </select>
@@ -39,7 +40,7 @@ export default function OutlinePanel({ shapes, lines, onGenerate }: Props) {
         <select value={relationType} onChange={(e) => setRelationType(e.target.value)}>
           {lines.map((l) => (
             <option key={l.relation_type} value={l.relation_type}>
-              {l.relation_type}
+              {humanLabel(l.relation_type)}
             </option>
           ))}
         </select>

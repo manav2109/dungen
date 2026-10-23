@@ -101,6 +101,9 @@ backend if it isn't reachable at `/api` in that environment.
 
 ## API
 
+For the interface changes and frontend verification commands, see
+[Editor UI Polish](../docs/editor-ui-polish.md).
+
 All endpoints below except `/api/health`, `/api/auth/signup`, `/api/auth/login` require
 `Authorization: Bearer <token>` (see Accounts, above).
 

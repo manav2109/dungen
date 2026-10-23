@@ -26,7 +26,7 @@ export default function LoginScreen({ onAuthed }: Props) {
   return (
     <div className="login-screen">
       <form className="login-card" onSubmit={submit}>
-        <div className="brand">DrawGen</div>
+        <div className="brand"><span className="brand-mark" aria-hidden="true">D</span>DrawGen</div>
         <p className="hint">
           {mode === "login" ? "Log in to your diagrams." : "Create an account to start saving diagrams."}
         </p>

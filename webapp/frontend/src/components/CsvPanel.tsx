@@ -24,7 +24,8 @@ export default function CsvPanel({ unknownTypes, shapes, lines, onApply }: Props
   const [linesCsv, setLinesCsv] = useState("");
 
   return (
-    <div className="panel">
+    <div className="panel data-panel">
+      <div className="panel-heading"><h3>Edit diagram data</h3></div>
       <p className="hint">
         Paste Nodes/Edges CSV (same headers as the workbook) and apply it to the active diagram. Unknown
         entity/relation types are skipped and reported below. Prefilled with one example row per box —
@@ -35,18 +36,18 @@ export default function CsvPanel({ unknownTypes, shapes, lines, onApply }: Props
         <textarea rows={8} value={nodesCsv} onChange={(e) => setNodesCsv(e.target.value)} spellCheck={false} />
       </label>
       {shapes.length > 0 && (
-        <p className="hint">
+        <details className="syntax-help"><summary>Supported shape types</summary><p className="hint">
           Valid entity_type values: {shapes.map((s) => s.entity_type).join(", ")}
-        </p>
+        </p></details>
       )}
       <label className="field">
         <span>Edges CSV</span>
         <textarea rows={5} value={edgesCsv} onChange={(e) => setEdgesCsv(e.target.value)} spellCheck={false} />
       </label>
       {lines.length > 0 && (
-        <p className="hint">
+        <details className="syntax-help"><summary>Supported connection types</summary><p className="hint">
           Valid relation_type values: {lines.map((l) => l.relation_type).join(", ")}
-        </p>
+        </p></details>
       )}
       <button className="link-btn" onClick={() => setShowRules((v) => !v)}>
         {showRules ? "Hide" : "Add"} custom Shape_Library / Line_Rules rows

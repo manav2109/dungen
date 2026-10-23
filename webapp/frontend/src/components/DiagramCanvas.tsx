@@ -145,6 +145,7 @@ export default function DiagramCanvas({
   const svgElRef = useRef<SVGSVGElement | null>(null);
   const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
   const [connectSource, setConnectSource] = useState<string | null>(null);
+  const [showConnections, setShowConnections] = useState(false);
   const dragState = useRef<{
     id: string;
     startClientX: number;
@@ -602,8 +603,9 @@ export default function DiagramCanvas({
             : "Click a source shape to start a connection"}
         </div>
       )}
-      <div className="zoom-controls">
-        <button onClick={() => zoomBy(1.2)} title="Zoom in">+</button>
+      <div className="zoom-controls" role="group" aria-label="Canvas view controls" onPointerDown={(event) => event.stopPropagation()}>
+        {selectedSoleId && <button className="zoom-wide" aria-pressed={showConnections} onClick={() => setShowConnections((show) => !show)} title="Show or hide the selected shape's connections">Connections</button>}
+        <button onClick={() => zoomBy(1.2)} title="Zoom in" aria-label="Zoom in">+</button>
         <button
           className="zoom-readout"
           onClick={resetZoom}
@@ -612,7 +614,7 @@ export default function DiagramCanvas({
         >
           {Math.round(view.scale * 100)}%
         </button>
-        <button onClick={() => zoomBy(1 / 1.2)} title="Zoom out">−</button>
+        <button onClick={() => zoomBy(1 / 1.2)} title="Zoom out" aria-label="Zoom out">−</button>
         <button className="zoom-wide" onClick={fitToScreen} title="Fit the whole diagram on screen">
           Fit
         </button>
@@ -620,7 +622,7 @@ export default function DiagramCanvas({
           Center
         </button>
       </div>
-      {busy && <div className="canvas-busy">Recomputing…</div>}
+      {busy && <div className="canvas-busy" role="status">Updating diagram…</div>}
       <div
         className="diagram-world"
         ref={worldRef}
@@ -629,7 +631,7 @@ export default function DiagramCanvas({
           transformOrigin: "0 0",
         }}
       />
-      {selectedSoleId && tooltipPos && (
+      {showConnections && selectedSoleId && tooltipPos && (
         <div
           className="node-tooltip"
           style={{ left: tooltipPos.x, top: tooltipPos.y }}

@@ -43,6 +43,7 @@ import VoicePanel from "./components/VoicePanel";
 import LoginScreen from "./components/LoginScreen";
 import EmptyState from "./components/EmptyState";
 import Sidebar, { SIDEBAR_DEFAULT } from "./components/Sidebar";
+import SaveDialog from "./components/SaveDialog";
 import { usePersistentState } from "./usePersistentState";
 import "./styles.css";
 
@@ -148,6 +149,14 @@ const SIDEBAR_TABS: [SidebarTab, string, React.ReactNode][] = [
   ["projects", "Projects", ICONS.projects],
 ];
 
+const SIDEBAR_GROUPS: { label: string; keys: SidebarTab[] }[] = [
+  { label: "Shapes", keys: ["palette"] },
+  { label: "Properties", keys: ["properties"] },
+  { label: "Create", keys: ["templates", "outline", "voice"] },
+  { label: "Data & Styles", keys: ["csv", "style"] },
+  { label: "Projects", keys: ["projects"] },
+];
+
 function download(filename: string, content: string, mime: string) {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
@@ -184,6 +193,7 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
   // Every successful mutation marks the diagram dirty; saving clears it. Drives
   // both the toolbar's saved/unsaved indicator and the leave-page guard.
   const [dirty, setDirty] = useState(false);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   // Where the open diagram came from ("Sample: S1_…", "Uploaded: foo.xlsx", …).
   // The API response only carries the diagram itself, so provenance is tracked
   // here at the point of loading.
@@ -343,9 +353,8 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
       onSaveProject(currentProjectName);
       return;
     }
-    const name = window.prompt("Save as:", diagram?.title || "Untitled");
-    if (name && name.trim()) onSaveProject(name.trim());
-  }, [currentProjectId, currentProjectName, diagram, onSaveProject]);
+    setSaveDialogOpen(true);
+  }, [currentProjectId, currentProjectName, onSaveProject]);
 
   const onDeleteProject = useCallback(
     (id: string) => {
@@ -570,6 +579,10 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
   // ---------- keyboard shortcuts ----------
   useEffect(() => {
     const onKeyDown = (ev: KeyboardEvent) => {
+      if (saveDialogOpen) {
+        if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") ev.preventDefault();
+        return;
+      }
       // Save is the one shortcut that must survive focus being in a text field —
       // it also has to beat the browser's own "save page" dialog to preventDefault.
       if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") {
@@ -613,6 +626,7 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
     onDeleteNode,
     onBulkDeleteNodes,
     onQuickSave,
+    saveDialogOpen,
   ]);
 
   // ---------- leave-page guard ----------
@@ -630,9 +644,10 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
 
   return (
     <div className="app">
+      {saveDialogOpen && <SaveDialog initialName={diagram?.title || "Untitled"} onSave={onSaveProject} onClose={() => setSaveDialogOpen(false)} />}
       <Toolbar
         hasDiagram={!!diagram}
-        title={diagram?.title ?? null}
+        title={currentProjectName || diagram?.title || null}
         loading={loading}
         busy={busy}
         error={error}
@@ -659,7 +674,7 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
         onDownload={onDownload}
         hasSavedProject={!!currentProjectId}
         onQuickSave={onQuickSave}
-        lastSavedAt={autosaveAt}
+        lastSavedAt={currentProjectId ? autosaveAt : null}
         dirty={dirty}
         username={username}
         onLogout={onLogout}
@@ -688,6 +703,8 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
             />
           ) : (
             <EmptyState
+              projects={projects}
+              onLoadProject={onLoadProject}
               onBlank={onBlank}
               onSample={onSample}
               onUpload={onUpload}
@@ -699,6 +716,7 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
         {diagram && (
           <Sidebar
             tabs={SIDEBAR_TABS}
+            groups={SIDEBAR_GROUPS}
             tab={tab}
             onTabChange={setTab}
             width={sidebarWidth}
