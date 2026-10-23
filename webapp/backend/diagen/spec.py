@@ -44,16 +44,15 @@ class Spec:
 
         `use_defaults=True` pre-seeds `self.shapes`/`self.lines` with the
         ~40-entity/~25-relation built-in palette (`diagen.defaults`) ported
-        from the JS playground, so those flows work without the caller ever
-        needing to define a Shape_Library/Line_Rules sheet. Off by default so
-        the CLI and every existing xlsx-driven diagram keep behaving exactly
-        as before — those workbooks are fully self-contained and don't need
-        (or expect) an implicit fallback palette.
+        from the JS playground, so purely in-memory flows work without the
+        caller ever needing to define Shape_Library/Line_Rules rows. Workbook
+        loading *always* starts from that same palette: the workbook can omit
+        the rule sheets entirely, add new types, or override a built-in type
+        for that workbook only.
 
-        Custom rows never override a name that's already present (matches
-        the JS `mergeRules` semantics: first definition wins) — a workbook
-        can freely ADD new entity/relation types alongside the defaults, but
-        can't silently reshape one of the built-ins out from under it.
+        Later rows override an existing definition. This intentionally makes
+        a workbook's Shape_Library/Line_Rules its local customization layer
+        over the static defaults.
         """
         self.shapes: dict[str, ShapeDef] = dict(DEFAULT_SHAPES) if use_defaults else {}
         self.lines: dict[str, LineDef] = dict(DEFAULT_LINES) if use_defaults else {}
@@ -69,6 +68,14 @@ class Spec:
         return cls(None, use_defaults=use_defaults)
 
     def _load_workbook(self, path):
+        # Rule sheets in a workbook are optional. Start from the static
+        # palette even when the caller used the legacy `use_defaults=False`
+        # constructor path (notably the CLI), then let workbook rows override
+        # individual definitions below.
+        if not self.shapes:
+            self.shapes = dict(DEFAULT_SHAPES)
+        if not self.lines:
+            self.lines = dict(DEFAULT_LINES)
         wb = load_workbook(path, data_only=False)
         if 'Shape_Library' in wb.sheetnames:
             for r in _rows(wb['Shape_Library']):
@@ -89,10 +96,10 @@ class Spec:
             for r in _rows(wb['Edges']):
                 self._add_edge(r)
 
-    # -- rule ingestion (additive-only; see docstring above) ------------
+    # -- rule ingestion (workbook rows override defaults) ----------------
     def add_shape_row(self, r) -> bool:
         t = _s(r.get('entity_type'))
-        if not t or t in self.shapes:
+        if not t:
             return False
         self.shapes[t] = ShapeDef(
             entity_type=t, family=_s(r.get('family')),
@@ -105,7 +112,7 @@ class Spec:
 
     def add_line_row(self, r) -> bool:
         t = _s(r.get('relation_type'))
-        if not t or t in self.lines:
+        if not t:
             return False
         self.lines[t] = LineDef(
             relation_type=t, family=_s(r.get('family')),

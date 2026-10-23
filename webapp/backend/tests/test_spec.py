@@ -94,3 +94,41 @@ def test_template_workbook_is_self_contained(template_spec):
     assert template_spec.shapes
     assert template_spec.lines
     assert any(d.nodes for d in template_spec.diagrams.values())
+
+
+def test_workbook_uses_defaults_and_overrides_them_locally(tmp_path):
+    """Rule sheets are optional, and any supplied row wins over a default."""
+    from openpyxl import Workbook
+
+    path = tmp_path / 'local-rules.xlsx'
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    shapes = wb.create_sheet('Shape_Library')
+    shapes.append(['entity_type', 'family', 'shape', 'default_w', 'default_h',
+                   'min_w', 'min_h', 'fill_hex', 'stroke_hex', 'auto_size'])
+    shapes.append(['application_component', 'Local', 'rounded rectangle', 180, 70,
+                   120, 50, '#123456', '#654321', 'N'])
+
+    lines = wb.create_sheet('Line_Rules')
+    lines.append(['relation_type', 'family', 'line_style', 'width_px', 'source_end',
+                  'target_end', 'routing', 'label_position', 'color_hex'])
+    lines.append(['association', 'Local', 'dashed', 3, 'none', 'filled arrow',
+                  'straight', 'near source', '#112233'])
+
+    nodes = wb.create_sheet('Nodes')
+    nodes.append(['diagram_id', 'node_id', 'parent_id', 'entity_type', 'label'])
+    nodes.append(['D1', 'A', '', 'business_actor', 'Built-in fallback'])
+    nodes.append(['D1', 'B', '', 'application_component', 'Workbook override'])
+
+    edges = wb.create_sheet('Edges')
+    edges.append(['diagram_id', 'edge_id', 'source_id', 'target_id', 'relation_type'])
+    edges.append(['D1', 'E1', 'A', 'B', 'association'])
+    wb.save(path)
+
+    loaded = Spec(path)
+    assert loaded.shapes['business_actor'].entity_type == 'business_actor'
+    assert loaded.shapes['application_component'].fill == '#123456'
+    assert loaded.shapes['application_component'].default_w == 180
+    assert loaded.lines['association'].style == 'dashed'
+    assert loaded.lines['association'].target_end == 'filled arrow'
