@@ -1,8 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { Button, Card, Col, Row, Typography } from "antd";
 import type { LineOut, ProjectInfo, SampleInfo, ShapeOut } from "../api";
 import { downloadSample, getPalette, listSamples, sampleLabel, sampleMeta } from "../api";
 import TemplatesPanel from "./TemplatesPanel";
 import OutlinePanel from "./OutlinePanel";
+
+const { Title, Paragraph, Text } = Typography;
 
 interface Props {
   onBlank: () => void;
@@ -50,33 +53,43 @@ export default function EmptyState({
   return (
     <div className="empty-state">
       <div className="empty-card welcome-hero">
-        <p className="eyebrow">From spreadsheet to diagram</p>
-        <h2>Start a diagram</h2>
-        <p className="hint">Upload a workbook, choose a template, or build your own.</p>
+        <Text className="eyebrow">From spreadsheet to diagram</Text>
+        <Title level={2}>Start a diagram</Title>
+        <Paragraph className="hint">Upload a workbook, choose a template, or build your own.</Paragraph>
 
-        <div className="start-options">
-          <button type="button" className="btn btn-primary start-option" onClick={() => fileRef.current?.click()}>
-            <span className="start-option-icon" aria-hidden="true">↑</span>
-            <span className="start-option-title">Upload Excel</span>
-            <span className="start-option-description">Turn the rows in an .xlsx workbook into a diagram.</span>
-          </button>
-          <button
-            type="button"
-            className={`btn start-option ${expanded === "template" ? "active" : ""}`}
-            aria-expanded={expanded === "template"}
-            aria-controls={`${sectionId}-template`}
-            onClick={() => toggle("template")}
-          >
-            <span className="start-option-icon" aria-hidden="true">▦</span>
-            <span className="start-option-title">Use a template</span>
-            <span className="start-option-description">Choose a starting structure and make it your own.</span>
-          </button>
-          <button type="button" className="btn start-option" onClick={onBlank}>
-            <span className="start-option-icon" aria-hidden="true">+</span>
-            <span className="start-option-title">Blank diagram</span>
-            <span className="start-option-description">Start with an empty canvas and add shapes and connections.</span>
-          </button>
-        </div>
+        <Row gutter={[16, 16]} className="start-options-row">
+          <Col xs={24} sm={8}>
+            <Card
+              hoverable
+              className="start-option-card start-option-card-primary"
+              onClick={() => fileRef.current?.click()}
+            >
+              <span className="start-option-icon" aria-hidden="true">↑</span>
+              <div className="start-option-title">Upload Excel</div>
+              <div className="start-option-description">Turn the rows in an .xlsx workbook into a diagram.</div>
+            </Card>
+          </Col>
+          <Col xs={24} sm={8}>
+            <Card
+              hoverable
+              className={`start-option-card ${expanded === "template" ? "active" : ""}`}
+              aria-expanded={expanded === "template"}
+              aria-controls={`${sectionId}-template`}
+              onClick={() => toggle("template")}
+            >
+              <span className="start-option-icon" aria-hidden="true">▦</span>
+              <div className="start-option-title">Use a template</div>
+              <div className="start-option-description">Choose a starting structure and make it your own.</div>
+            </Card>
+          </Col>
+          <Col xs={24} sm={8}>
+            <Card hoverable className="start-option-card" onClick={onBlank}>
+              <span className="start-option-icon" aria-hidden="true">+</span>
+              <div className="start-option-title">Blank diagram</div>
+              <div className="start-option-description">Start with an empty canvas and add shapes and connections.</div>
+            </Card>
+          </Col>
+        </Row>
         <input
           ref={fileRef}
           type="file"
@@ -89,15 +102,15 @@ export default function EmptyState({
           }}
         />
 
-        <button
-          type="button"
-          className="link-btn"
+        <Button
+          type="link"
+          className="link-btn outline-link"
           aria-expanded={expanded === "outline"}
           aria-controls={`${sectionId}-outline`}
           onClick={() => toggle("outline")}
         >
           Or create a diagram from a text outline
-        </button>
+        </Button>
 
         <div id={`${sectionId}-template`} className="empty-expanded" hidden={expanded !== "template"}>
           {expanded === "template" && <TemplatesPanel onGenerate={onGenerateTemplate} />}
@@ -109,27 +122,36 @@ export default function EmptyState({
         {recentProjects.length > 0 && (
           <section className="recent-projects" aria-labelledby={`${sectionId}-recent`}>
             <h3 id={`${sectionId}-recent`} className="section-heading">Recent projects</h3>
-            <ul className="project-list">
+            <Row gutter={[12, 12]}>
               {recentProjects.map((project) => (
-                <li key={project.id}>
-                  <button
-                    type="button"
-                    className="btn project-row-main"
-                    aria-label={`Open project ${project.name}`}
+                <Col xs={24} sm={12} key={project.id}>
+                  <Card
+                    size="small"
+                    hoverable
+                    className="recent-project-card"
                     onClick={() => onLoadProject?.(project.id, project.name)}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open project ${project.name}`}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onLoadProject?.(project.id, project.name);
+                      }
+                    }}
                   >
-                    <span className="project-name">{project.name}</span>
-                  </button>
-                </li>
+                    {project.name}
+                  </Card>
+                </Col>
               ))}
-            </ul>
+            </Row>
           </section>
         )}
 
         {samples.length > 0 && (
           <details className="examples-section">
             <summary className="section-heading">Explore examples</summary>
-            <p className="hint">Open an example diagram or download its workbook to see how it is organized.</p>
+            <Paragraph className="hint">Open an example diagram or download its workbook to see how it is organized.</Paragraph>
             <ul className="sample-list">
               {samples.map((s) => (
                 <li key={s.name}>
@@ -137,15 +159,14 @@ export default function EmptyState({
                     <span className="sample-name">{sampleLabel(s)}</span>
                     {sampleMeta(s) && <span className="sample-meta">{sampleMeta(s)}</span>}
                   </button>
-                  <button
-                    type="button"
-                    className="sample-dl"
+                  <Button
+                    size="small"
                     title={`Download ${s.name} — open it in Excel to see the rows behind this diagram`}
                     aria-label={`Download ${s.name}`}
                     onClick={() => downloadSample(s.name).catch(() => {})}
                   >
                     ↓ .xlsx
-                  </button>
+                  </Button>
                 </li>
               ))}
             </ul>

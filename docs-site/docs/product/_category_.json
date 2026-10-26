@@ -1,0 +1,8 @@
+{
+  "label": "Product",
+  "position": 1,
+  "link": {
+    "type": "generated-index",
+    "description": "What DrawGen is, who it's for, and the requirements behind the current build."
+  }
+}

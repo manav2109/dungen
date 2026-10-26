@@ -1,0 +1,35 @@
+# Container variant of ./Caddyfile (the bash-watchdog config) — same two
+# hostnames, same behavior, just container-network targets instead of
+# 127.0.0.1/relative paths:
+#   - reverse_proxy target is the "backend" compose service name, not 127.0.0.1
+#   - frontend/portal roots are baked into this image (see frontend.Dockerfile)
+#     instead of a relative "../frontend/dist"
+#   - adds a /docs/* block for the Docusaurus build (bind-mounted at runtime,
+#     not baked into the image, so it can be updated without a rebuild — and
+#     if it's not there yet, file_server just 404s under it, same as any
+#     other missing file)
+{
+	admin off
+}
+
+http://dev-ai.site:8080 {
+	root * /srv/portal
+	file_server
+}
+
+http://drawgen.dev-ai.site:8080 {
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	handle_path /docs/* {
+		root * /srv/docs
+		file_server
+	}
+
+	handle {
+		root * /srv/frontend
+		file_server
+		try_files {path} /index.html
+	}
+}

@@ -18,6 +18,9 @@ dist/
 webapp/deploy/bin/
 webapp/deploy/logs/
 
+# Docker Compose env file — real secrets/paths, .env.example is the template
+webapp/deploy/.env
+
 # editors / OS
 .DS_Store
 Thumbs.db

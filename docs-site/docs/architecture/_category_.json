@@ -1,0 +1,8 @@
+{
+  "label": "Architecture",
+  "position": 3,
+  "link": {
+    "type": "generated-index",
+    "description": "How the web app and the diagen layout engine fit together, and how the engine turns rows into a routed diagram."
+  }
+}

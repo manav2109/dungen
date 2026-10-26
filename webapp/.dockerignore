@@ -1,0 +1,11 @@
+# Only used when the build context is webapp/ itself — currently just
+# deploy/frontend.Dockerfile (the "caddy" compose service), which needs
+# frontend/ plus deploy/portal + deploy/Caddyfile.docker and nothing from
+# backend/. Keeps that build context small and keeps backend/data (runtime
+# DB + secret.key) out of any image build context entirely.
+backend/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+deploy/bin/
+deploy/logs/

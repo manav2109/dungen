@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ConfigProvider, theme as antdTheme } from "antd";
 import type { DiagramResponse, ProjectInfo } from "./api";
 import {
   autoArrange,
@@ -818,6 +819,34 @@ export default function App() {
   }, []);
 
   if (!checked) return null;
-  if (!user) return <LoginScreen onAuthed={onAuthed} />;
-  return <DiagramApp key={user.username} username={user.username} onLogout={onLogout} />;
+  return (
+    <ConfigProvider
+      theme={{
+        algorithm: antdTheme.defaultAlgorithm,
+        // Mirror styles.css's :root tokens so AntD components read as part of
+        // the product, not as a generic library dropped on top of it.
+        token: {
+          colorPrimary: "#4265d6",
+          colorPrimaryHover: "#3453bd",
+          colorPrimaryBg: "#eef2ff",
+          colorText: "#253047",
+          colorTextSecondary: "#647087",
+          colorBorder: "#e2e7ef",
+          colorBorderSecondary: "#ccd4e0",
+          colorBgContainer: "#ffffff",
+          colorBgLayout: "#f5f7fb",
+          colorError: "#b33737",
+          borderRadius: 8,
+          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+          fontSize: 14,
+        },
+      }}
+    >
+      {!user ? (
+        <LoginScreen onAuthed={onAuthed} />
+      ) : (
+        <DiagramApp key={user.username} username={user.username} onLogout={onLogout} />
+      )}
+    </ConfigProvider>
+  );
 }

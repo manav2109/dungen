@@ -218,6 +218,100 @@ Then replace `tunnel-watchdog.sh`'s run line with:
 becomes fixed (`https://app.yourdomain.com`), no more checking
 `check-url.sh`.
 
+## Docker (alternative to the bash watchdogs above)
+
+A Docker Compose version of the same 4 processes — `backend`, `caddy`,
+`tunnel`, `backup` — lives alongside the bash-watchdog setup described
+above, not in place of it. Both read/write the same hardcoded backend data
+path (`webapp/backend/data/` → a named volume when containerized), so
+**don't run both against the same data at the same time** — pick one path
+per machine until you've cut over for real.
+
+New files, none of them reusing the GCP-oriented Dockerfiles in
+`webapp/backend/Dockerfile` / `webapp/frontend/Dockerfile` (those target
+Cloud Run: two independent services, cross-origin, no in-process `/api`
+proxy — see `webapp/deploy-gcp/README.md`):
+
+- `docker-compose.yml` — the 4 services.
+- `backend.Dockerfile` — `python:3.12-slim`, fixed `--port 8000 --workers 1`
+  (no Cloud-Run-style `$PORT` indirection).
+- `frontend.Dockerfile` — builds the frontend, then becomes the `caddy`
+  service's image (`FROM caddy:2-alpine`, frontend dist + `portal/` +
+  `Caddyfile.docker` baked in) — one shared Caddy serving both hostnames,
+  matching what's actually live today, not two independent static servers.
+- `Caddyfile.docker` — same routing as `./Caddyfile`, retargeted at
+  container-network service names instead of `127.0.0.1`/relative paths,
+  plus a `/docs/*` block for the Docusaurus build (Phase 3).
+- `.env.example` — copy to `.env` (gitignored) and fill in.
+
+### Quick start
+
+```bash
+cd webapp/deploy
+cp .env.example .env
+# edit .env: at minimum set CLOUDFLARED_CERT_PATH / CLOUDFLARED_CREDENTIALS_PATH
+docker compose up -d --build backend caddy backup
+```
+
+`tunnel` is deliberately left out of that command — see "About the
+`tunnel` service" below. `backend`/`caddy`'s host ports default to
+8001/8081 (not 8000/8080) specifically so this can come up side-by-side
+with the live bash-watchdog stack without a port conflict; see
+`.env.example`.
+
+Verify like the bash setup's own sanity-check, just on the alternate ports:
+
+```bash
+curl http://127.0.0.1:8001/api/health
+curl -H "Host: drawgen.dev-ai.site" http://127.0.0.1:8081/
+```
+
+Or point a hosts-file entry at `127.0.0.1` for `drawgen.dev-ai.site` /
+`dev-ai.site` and browse normally on port 8081.
+
+### About the `tunnel` service
+
+It points the **existing** named tunnel `diagen` (already bound to
+`dev-ai.site` + `drawgen.dev-ai.site` — this never creates a new tunnel or
+touches DNS) at this stack's `caddy` container. Cloudflare load-balances a
+named tunnel's traffic across *every* currently-connected replica — so
+starting this container while `tunnel-watchdog.sh` is also running means
+some share of real visitors would be routed to whichever backend/data this
+stack happens to have up at the time. Only start it for a real cutover,
+after the bash watchdogs are stopped:
+
+```bash
+# stop the bash side first (see "Stopping / removing" above), then:
+docker compose up -d tunnel
+```
+
+### Persistence
+
+`projects.db`, `secret.key`, and `backups/` all live under one named
+volume, `diagen-data`, mounted at `/app/data` in the backend container —
+the same path `app/auth.py`/`app/db.py` already hardcode, so no code
+change was needed. `docker compose down` (without `-v`) leaves the volume
+alone; `docker compose down -v` deletes it, same as deleting
+`webapp/backend/data/` by hand — don't pass `-v` unless that's actually
+what you want.
+
+### Running the backend test suite against the image's own environment
+
+```bash
+docker compose build backend
+docker run --rm \
+  -v "$(pwd)/../backend:/app" \
+  -w /app \
+  --entrypoint sh \
+  diagen-backend:latest \
+  -c "pip install --no-cache-dir -r requirements-dev.txt && pytest -q"
+```
+
+Confirms the `python:3.12-slim` base image + `requirements.txt` pins pass
+the same suite the bash deploy's `.venv` does — catches dependency/version
+drift the Dockerfile's base image choice could otherwise introduce
+silently.
+
 ## Notes / known trade-offs
 
 - Single point of failure: your machine's power + internet. No failover.

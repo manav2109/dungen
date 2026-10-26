@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Empty } from "antd";
 import type { ProjectInfo } from "../api";
 
 interface Props {
@@ -72,7 +73,13 @@ export default function ProjectsPanel({
       <h3 className="section-heading" style={{ marginTop: 16 }}>
         Saved projects
       </h3>
-      {projects.length === 0 && <p className="hint">Your saved projects will appear here. Give this diagram a name to save it.</p>}
+      {projects.length === 0 && (
+        <Empty
+          className="panel-empty-state"
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="Your saved projects will appear here — give this diagram a name to save it"
+        />
+      )}
       <ul className="project-list">
         {projects.map((p) => (
           <li key={p.id} className={p.id === currentProjectId ? "active" : ""}>

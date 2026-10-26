@@ -1,0 +1,136 @@
+# Containerized equivalent of this directory's 4 bash-watchdog scripts
+# (backend-watchdog.sh, caddy-watchdog.sh, tunnel-watchdog.sh,
+# backup-watchdog.sh) — same 4 processes, same responsibilities, `restart:
+# unless-stopped` standing in for each script's own retry loop.
+#
+# Quick start (see ../README.md's "Docker" section for the full guide,
+# including why `tunnel` is left out of the examples below):
+#   cp .env.example .env            # then fill in the Cloudflare paths
+#   docker compose up -d --build backend caddy backup
+#
+# Host ports (BACKEND_HOST_PORT/CADDY_HTTP_PORT) default OFF the live
+# bash-watchdog stack's ports (8000/8080) so this can be brought up
+# side-by-side on the same machine without a conflict — see .env.example.
+# Neither the `tunnel` nor `caddy` container actually needs those host
+# ports for real traffic: cloudflared reaches Caddy, and Caddy reaches the
+# backend, over this compose file's own internal network by service name
+# regardless of what's published to the host.
+
+services:
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../deploy/backend.Dockerfile
+    container_name: diagen-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - diagen-data:/app/data
+    ports:
+      - "${BACKEND_HOST_PORT:-8001}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  caddy:
+    build:
+      context: ..
+      dockerfile: deploy/frontend.Dockerfile
+    container_name: diagen-caddy
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${CADDY_HTTP_PORT:-8081}:8080"
+    volumes:
+      # Docusaurus build output (Phase 3, built separately) — bind-mounted,
+      # not baked into the image, so a docs rebuild doesn't need a Caddy
+      # rebuild. Fine if this path doesn't exist yet: Caddy still starts,
+      # /docs/* just 404s until the build lands here.
+      - ${DOCS_SITE_BUILD_PATH:-../../docs-site/build}:/srv/docs:ro
+    healthcheck:
+      # Host-header vhost routing means a bare request here can legitimately
+      # 404 (no Host match) even when Caddy is perfectly healthy — a plain
+      # TCP probe is what actually answers "is Caddy up", so that's checked
+      # instead of any particular HTTP status.
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # Connects the EXISTING named tunnel "diagen" (already bound to
+  # dev-ai.site + drawgen.dev-ai.site) to this stack's Caddy. Left out of
+  # the quick-start command above on purpose: Cloudflare load-balances a
+  # named tunnel's traffic across every connected replica, so starting this
+  # alongside the live tunnel-watchdog.sh process would start sending real
+  # visitors to whatever this stack's `caddy`/`backend` currently have —
+  # see ../README.md. Only bring this up for a real cutover, after the bash
+  # watchdogs are stopped.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: diagen-tunnel
+    restart: unless-stopped
+    depends_on:
+      caddy:
+        condition: service_healthy
+    volumes:
+      - ${CLOUDFLARED_CERT_PATH}:/etc/cloudflared/cert.pem:ro
+      - ${CLOUDFLARED_CREDENTIALS_PATH}:/etc/cloudflared/creds.json:ro
+    command:
+      - tunnel
+      - --origincert
+      - /etc/cloudflared/cert.pem
+      - --credentials-file
+      - /etc/cloudflared/creds.json
+      - --no-autoupdate
+      - run
+      - --url
+      - http://caddy:8080
+      - diagen
+
+  # Same logic as backup-watchdog.sh (copy projects.db on an interval, prune
+  # anything past retention), just pointed at the named volume's paths
+  # instead of the bash script's relative ones.
+  backup:
+    image: alpine:3.20
+    container_name: diagen-backup
+    restart: unless-stopped
+    environment:
+      RETAIN_DAYS: ${BACKUP_RETAIN_DAYS:-14}
+      INTERVAL_SEC: ${BACKUP_INTERVAL_SEC:-21600}
+    volumes:
+      - diagen-data:/data
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /data/backups
+        while true; do
+          if [ -f /data/projects.db ]; then
+            stamp=$$(date +%Y-%m-%d_%H%M%S)
+            dest="/data/backups/projects_$${stamp}.db"
+            if cp /data/projects.db "$$dest"; then
+              echo "$$(date) - backed up to $$dest"
+            else
+              echo "$$(date) - backup FAILED"
+            fi
+            find /data/backups -name 'projects_*.db' -mtime "+$$RETAIN_DAYS" -print -delete
+          else
+            echo "$$(date) - no projects.db yet, nothing to back up"
+          fi
+          sleep "$$INTERVAL_SEC"
+        done
+
+volumes:
+  # Covers projects.db + secret.key + backups/ in one mount — matches the
+  # hardcoded `Path(__file__).resolve().parent.parent / "data"` both
+  # app/db.py and app/auth.py resolve to inside the backend container
+  # (/app/data), so no code change was needed to make this persist.
+  diagen-data:

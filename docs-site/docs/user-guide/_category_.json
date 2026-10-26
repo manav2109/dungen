@@ -1,0 +1,8 @@
+{
+  "label": "User Guide",
+  "position": 2,
+  "link": {
+    "type": "generated-index",
+    "description": "Using the DrawGen editor day to day, and operating a self-hosted deployment."
+  }
+}

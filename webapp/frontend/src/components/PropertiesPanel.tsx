@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Empty } from "antd";
 import type { ConnectionOut, EdgeOut, LineOut, NodeOut, ShapeOut } from "../api";
 import { humanLabel } from "../uiLabels";
 
@@ -144,7 +145,11 @@ export default function PropertiesPanel({
     return (
       <div className="panel">
         <h3 className="panel-heading">Properties</h3>
-        <p className="hint panel-empty">Select a shape or connection to edit its properties.</p>
+        <Empty
+          className="panel-empty-state"
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="Select a shape or connection to edit its properties"
+        />
       </div>
     );
   }
