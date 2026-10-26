@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>dev-ai.site</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #151822;
+    --border: #262b3a;
+    --text: #e8eaf0;
+    --muted: #8b90a3;
+    --accent: #6366f1;
+    --ok: #22c55e;
+    --off: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 64px 20px;
+  }
+  header { text-align: center; margin-bottom: 40px; }
+  h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.02em; }
+  header p { margin: 0; color: var(--muted); font-size: 15px; }
+  .grid {
+    width: 100%;
+    max-width: 720px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    display: block;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.15s, transform 0.15s;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .card-name { font-size: 16px; font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--off); flex-shrink: 0; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .dot.off { background: #ef4444; }
+  .card-desc { font-size: 13px; color: var(--muted); line-height: 1.4; }
+  .card-url { margin-top: 12px; font-size: 12px; color: var(--accent); }
+  footer { margin-top: 48px; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>dev-ai.site</h1>
+    <p>Active services on this domain</p>
+  </header>
+
+  <div class="grid" id="services"></div>
+
+  <footer>Self-hosted via Cloudflare Tunnel</footer>
+
+<script>
+  const services = [
+    {
+      name: "DrawGen",
+      desc: "Spreadsheet to diagram generator",
+      url: "https://drawgen.dev-ai.site",
+      health: "https://drawgen.dev-ai.site/api/health",
+    },
+  ];
+
+  const grid = document.getElementById("services");
+
+  for (const svc of services) {
+    const card = document.createElement("a");
+    card.className = "card";
+    card.href = svc.url;
+    card.innerHTML = `
+      <div class="card-top">
+        <span class="card-name">${svc.name}</span>
+        <span class="dot" id="dot-${svc.name}"></span>
+      </div>
+      <div class="card-desc">${svc.desc}</div>
+      <div class="card-url">${svc.url.replace("https://", "")}</div>
+    `;
+    grid.appendChild(card);
+
+    const dot = () => document.getElementById(`dot-${svc.name}`);
+    fetch(svc.health, { signal: AbortSignal.timeout(4000) })
+      .then((r) => dot().classList.add(r.ok ? "ok" : "off"))
+      .catch(() => dot().classList.add("off"));
+  }
+</script>
+</body>
+</html>

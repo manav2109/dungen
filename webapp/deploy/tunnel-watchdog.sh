@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Runs a Cloudflare Quick Tunnel (no Cloudflare account/domain needed) and
-# restarts it if it ever exits.
+# Runs the named Cloudflare Tunnel "diagen" (bound to dev-ai.site via
+# `cloudflared tunnel route dns diagen dev-ai.site`) and restarts it if it
+# ever exits.
 #
-# NOTE: a quick tunnel's public *.trycloudflare.com URL is random and
-# changes every time it restarts. Check logs/tunnel.log (or run
-# check-url.sh) for the current one.
+# Public URL is fixed: https://dev-ai.site
 set -u
 export PATH="/usr/bin:/mingw64/bin:/c/Windows/System32:$PATH"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,10 +20,10 @@ fi
 cd "$SCRIPT_DIR" || exit 1
 
 while true; do
-  "$CF_EXE" tunnel --url http://127.0.0.1:8080 --no-autoupdate >> "$LOG_FILE" 2>&1
+  "$CF_EXE" tunnel --no-autoupdate run --url http://127.0.0.1:8080 diagen >> "$LOG_FILE" 2>&1
   {
     echo ""
-    echo "[watchdog] $(date) - tunnel exited, restarting in 3s (URL will change)"
+    echo "[watchdog] $(date) - tunnel exited, restarting in 3s"
   } >> "$LOG_FILE"
   sleep 3
 done
