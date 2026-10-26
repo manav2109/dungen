@@ -33,6 +33,12 @@ class Session:
     canvas_w: float
     canvas_h: float
     style_rules: str = ''
+    # Opaque to the backend — the frontend's Export panel owns this shape
+    # entirely (slide assignments, sizes, positions, orphan resolutions).
+    # Round-trips through project save/load (see app/main.py's
+    # projects_save/projects_load) so re-exporting an edited project
+    # doesn't mean redoing the whole form.
+    export_settings: dict = field(default_factory=dict)
     undo_stacks: dict = field(default_factory=dict)   # diagram_id -> [(nodes, edges), ...]
     redo_stacks: dict = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)

@@ -33,7 +33,7 @@ interface Props {
   onRedo: () => void;
   onSetTool: (tool: Tool) => void;
   onSearchChange: (s: string) => void;
-  onDownload: (kind: "svg" | "drawio" | "html") => void;
+  onOpenExport: () => void;
   hasSavedProject: boolean;
   onQuickSave: () => void;
   lastSavedAt: number | null;
@@ -60,7 +60,7 @@ export default function Toolbar({
   hasDiagram, title, loading, busy, error, onDismissError, source, sourceSample,
   nodeCount, edgeCount, diagrams, activeDiagramId, direction, tool, search,
   onUpload, onSample, onBlank, onSwitchDiagram, onSetDirection, onAutoArrange,
-  onUndo, onRedo, onSetTool, onSearchChange, onDownload, hasSavedProject,
+  onUndo, onRedo, onSetTool, onSearchChange, onOpenExport, hasSavedProject,
   onQuickSave, lastSavedAt, dirty, username, onLogout,
 }: Props) {
   const [samples, setSamples] = useState<SampleInfo[]>([]);
@@ -102,12 +102,7 @@ export default function Toolbar({
           }} />
           {hasDiagram && <>
             <button className="btn btn-primary" onClick={onQuickSave} disabled={disabled} title="Save diagram (Ctrl / ⌘ + S)">{hasSavedProject ? "Save" : "Save as…"}</button>
-            <ActionMenu label={<><Icon name="download" />Export</>}>
-              <p className="menu-heading">Download diagram</p>
-              <button className="menu-item" disabled={disabled} onClick={() => onDownload("svg")}>SVG<span className="menu-detail">Vector image</span></button>
-              <button className="menu-item" disabled={disabled} onClick={() => onDownload("drawio")}>draw.io<span className="menu-detail">Editable diagram</span></button>
-              <button className="menu-item" disabled={disabled} onClick={() => onDownload("html")}>HTML<span className="menu-detail">Web page</span></button>
-            </ActionMenu>
+            <button className="btn btn-quiet" disabled={disabled} onClick={onOpenExport}><Icon name="download" />Export</button>
           </>}
           <ActionMenu label={<><Icon name="user" /><span className="account-name">{username}</span></>} ariaLabel={`Account: ${username}`} className="account-menu">
             <p className="menu-heading">Signed in as {username}</p>

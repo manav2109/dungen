@@ -45,6 +45,7 @@ import LoginScreen from "./components/LoginScreen";
 import EmptyState from "./components/EmptyState";
 import Sidebar, { SIDEBAR_DEFAULT } from "./components/Sidebar";
 import SaveDialog from "./components/SaveDialog";
+import ExportPanel from "./components/ExportPanel";
 import { usePersistentState } from "./usePersistentState";
 import "./styles.css";
 
@@ -195,6 +196,7 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
   // both the toolbar's saved/unsaved indicator and the leave-page guard.
   const [dirty, setDirty] = useState(false);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [exportPanelOpen, setExportPanelOpen] = useState(false);
   // Where the open diagram came from ("Sample: S1_…", "Uploaded: foo.xlsx", …).
   // The API response only carries the diagram itself, so provenance is tracked
   // here at the point of loading.
@@ -646,6 +648,15 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
   return (
     <div className="app">
       {saveDialogOpen && <SaveDialog initialName={diagram?.title || "Untitled"} onSave={onSaveProject} onClose={() => setSaveDialogOpen(false)} />}
+      {exportPanelOpen && diagram && (
+        <ExportPanel
+          diagram={diagram}
+          projectName={currentProjectName}
+          onDownloadSimple={onDownload}
+          onClose={() => setExportPanelOpen(false)}
+          onSettingsSaved={(settings) => setDiagram((d) => (d ? { ...d, export_settings: settings } : d))}
+        />
+      )}
       <Toolbar
         hasDiagram={!!diagram}
         title={currentProjectName || diagram?.title || null}
@@ -672,7 +683,7 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
         onRedo={onRedo}
         onSetTool={setTool}
         onSearchChange={setSearch}
-        onDownload={onDownload}
+        onOpenExport={() => setExportPanelOpen(true)}
         hasSavedProject={!!currentProjectId}
         onQuickSave={onQuickSave}
         lastSavedAt={currentProjectId ? autosaveAt : null}

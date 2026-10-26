@@ -279,3 +279,26 @@ body.panning { cursor: grabbing; user-select: none; }
   .voice-mic.recording .voice-dot { animation: none; }
   .diagram-world [data-node-id], .diagram-world [data-edge-id] { transition: none; }
 }
+
+/* ---------- Export panel ---------- */
+.export-simple-tab { padding: 18px 2px 4px; display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
+.export-pptx-tab { padding: 14px 2px 4px; display: flex; flex-direction: column; gap: 18px; max-height: 65vh; overflow-y: auto; }
+.export-pptx-loading { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; padding: 24px 0; }
+
+.pptx-cluster-row { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; background: var(--canvas); }
+.pptx-cluster-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pptx-cluster-meta { color: var(--muted); font-size: 12px; margin-left: auto; }
+.pptx-cluster-fields { display: flex; flex-wrap: wrap; gap: 14px; }
+.pptx-cluster-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); font-weight: 550; }
+
+.pptx-slide-preview { width: 100%; max-width: 360px; aspect-ratio: 16 / 9; background: #fff; border: 1px solid var(--border-strong); border-radius: 4px; }
+.pptx-slide-rect { fill: #fff; stroke: var(--border-strong); stroke-width: .02; }
+.pptx-placement-rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: .04; }
+
+.pptx-orphans { border-top: 1px solid var(--border); padding-top: 14px; }
+.pptx-orphan-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; flex-wrap: wrap; }
+.pptx-orphan-badge { padding: 3px 10px; border-radius: 999px; background: #fff3cd; border: 1px solid #f0d78c; font-size: 12px; font-weight: 550; }
+.pptx-orphan-badge.excluded { background: var(--canvas); border-color: var(--border-strong); color: var(--muted); text-decoration: line-through; }
+.pptx-orphan-flag { font-size: 11px; color: var(--danger); font-weight: 600; }
+
+.pptx-actions { display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--border); padding-top: 14px; margin-top: -4px; }

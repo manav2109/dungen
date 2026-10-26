@@ -87,6 +87,9 @@ export interface DiagramResponse {
   lines: LineOut[];
   style_rules: string;
   unknown_types: string[];
+  // Opaque to this app's own code too, except the Export panel — see
+  // ExportPanel.tsx. Round-trips through project save/load untouched.
+  export_settings: Record<string, unknown>;
 }
 
 export interface PaletteResponse {
@@ -453,4 +456,87 @@ export async function loadProject(projectId: string): Promise<DiagramResponse> {
 
 export async function deleteProject(projectId: string): Promise<void> {
   await client.post("/projects/delete", { project_id: projectId });
+}
+
+// ---------- PPTX export ----------
+export interface ClusterBBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface ClusterOut {
+  id: string;
+  node_ids: string[];
+  top_level_ids: string[];
+  bbox: ClusterBBox;
+  suggested_name: string;
+}
+
+export interface OrphanOut {
+  node_id: string;
+  label: string;
+  bbox: ClusterBBox;
+  suggested_cluster_id: string | null;
+  confident: boolean;
+}
+
+export interface ClusterDetectResponse {
+  clusters: ClusterOut[];
+  orphans: OrphanOut[];
+}
+
+export async function detectPptxClusters(sessionId: string): Promise<ClusterDetectResponse> {
+  const r = await client.post<ClusterDetectResponse>("/export/pptx/detect", { session_id: sessionId });
+  return r.data;
+}
+
+export async function saveExportSettings(sessionId: string, settings: Record<string, unknown>): Promise<void> {
+  await client.post("/export/settings", { session_id: sessionId, settings });
+}
+
+export interface PptxPlacement {
+  image_png_base64: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface PptxTextBlock {
+  text: string;
+  font?: string;
+  size?: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface PptxSlidePayload {
+  slide_number: number;
+  placements: PptxPlacement[];
+  header?: PptxTextBlock;
+  content?: PptxTextBlock;
+}
+
+export interface PptxGeneratePayload {
+  filename: string;
+  slide_width_in?: number;
+  slide_height_in?: number;
+  slides: PptxSlidePayload[];
+}
+
+/** POSTs the finished plan and saves the resulting .pptx to disk — same
+ * blob-response pattern as `downloadSample`, since this is a new binary
+ * endpoint rather than a string already sitting on `DiagramResponse`. */
+export async function exportPptx(payload: PptxGeneratePayload): Promise<void> {
+  const r = await client.post("/export/pptx/generate", payload, { responseType: "blob" });
+  const url = URL.createObjectURL(r.data as Blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${payload.filename}.pptx`;
+  a.click();
+  URL.revokeObjectURL(url);
 }

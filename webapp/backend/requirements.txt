@@ -2,4 +2,5 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 python-multipart>=0.0.9
 openpyxl>=3.1
+python-pptx>=0.6.23  # PPTX export — pure Python, no native build step
 psycopg2-binary>=2.9  # only used when INSTANCE_CONNECTION_NAME/DATABASE_URL is set (Cloud Run + Cloud SQL); see app/db.py

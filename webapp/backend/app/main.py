@@ -11,25 +11,30 @@ There is no second, JS/TS-side copy of layout, routing, or editing logic
 anywhere in this project — the React frontend is a thin client over this API.
 """
 from __future__ import annotations
+import base64
 import copy
 from contextlib import asynccontextmanager
 import csv
 import io
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
+from pptx import Presentation
+from pptx.util import Inches, Pt
 
 from diagen.spec import Spec
 from diagen.layout import layout, _shift
 from diagen.render_svg import SvgRenderer
 from diagen.render_drawio import to_drawio
 from diagen.interop import node_dicts, edge_dicts, connections_map
+from diagen.clusters import find_clusters
 from diagen.defaults import DEFAULT_SHAPES, DEFAULT_LINES
 from diagen.templates import TEMPLATES, build_outline
 from diagen.model import Node, Edge
@@ -227,6 +232,7 @@ class DiagramResponse(BaseModel):
     lines: list[LineOut]
     style_rules: str
     unknown_types: list[str] = []
+    export_settings: dict = {}
 
 
 class PaletteResponse(BaseModel):
@@ -353,6 +359,67 @@ class ProjectSaveRequest(BaseModel):
 
 class ProjectIdRequest(BaseModel):
     project_id: str
+
+
+# ---------- PPTX export ----------
+class ClusterOut(BaseModel):
+    id: str
+    node_ids: list[str]
+    top_level_ids: list[str]
+    bbox: dict[str, float]
+    suggested_name: str
+
+
+class OrphanOut(BaseModel):
+    node_id: str
+    label: str
+    bbox: dict[str, float]
+    suggested_cluster_id: Optional[str] = None
+    confident: bool
+
+
+class ClusterDetectResponse(BaseModel):
+    clusters: list[ClusterOut]
+    orphans: list[OrphanOut]
+
+
+class PptxPlacement(BaseModel):
+    # Base64-inflated bound on a ~15MB PNG — matches MAX_UPLOAD_BYTES's
+    # rationale (catches abuse, not real images from this app's own canvas).
+    image_png_base64: str = Field(max_length=25_000_000)
+    x: float = Field(ge=0)
+    y: float = Field(ge=0)
+    w: float = Field(gt=0)
+    h: float = Field(gt=0)
+
+
+class PptxTextBlock(BaseModel):
+    text: str = Field(max_length=4000)
+    font: str = 'Calibri'
+    size: float = Field(default=18.0, gt=0, le=200)
+    x: float = Field(ge=0)
+    y: float = Field(ge=0)
+    w: float = Field(gt=0)
+    h: float = Field(gt=0)
+
+
+class PptxSlide(BaseModel):
+    slide_number: int = Field(ge=1, le=500)
+    placements: list[PptxPlacement] = Field(min_length=1, max_length=20)
+    header: Optional[PptxTextBlock] = None
+    content: Optional[PptxTextBlock] = None
+
+
+class PptxGenerateRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=200)
+    slide_width_in: float = Field(default=13.333, gt=1, le=56)
+    slide_height_in: float = Field(default=7.5, gt=1, le=56)
+    slides: list[PptxSlide] = Field(min_length=1, max_length=500)
+
+
+class ExportSettingsRequest(BaseModel):
+    session_id: str
+    settings: dict
 
 
 class SignupRequest(BaseModel):
@@ -627,6 +694,7 @@ def _build_response(session: Session, unknown_types: list[str] = None) -> Diagra
                         label_pos=l.label_pos, color=l.color) for l in spec.lines.values()],
         style_rules=session.style_rules,
         unknown_types=unknown_types or [],
+        export_settings=session.export_settings,
     )
 
 
@@ -1121,6 +1189,91 @@ def style_rules(req: StyleRulesRequest):
     return _build_response(session)
 
 
+# ---------- routes: export ----------
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\r\n]+')
+
+
+def _safe_filename(name: str, fallback: str = 'diagram') -> str:
+    cleaned = _UNSAFE_FILENAME_CHARS.sub('_', (name or '').strip())
+    return (cleaned or fallback)[:150]
+
+
+@app.post("/api/export/pptx/detect", response_model=ClusterDetectResponse)
+def export_pptx_detect(req: SessionIdRequest):
+    """Pure analysis, no file I/O: connected-components + orphan
+    suggestions for the active diagram, for the Export panel to render
+    before the user picks anything — see diagen/clusters.py."""
+    session = _get_session(req.session_id)
+    result = find_clusters(session.diagram)
+    return ClusterDetectResponse(**result)
+
+
+@app.post("/api/export/settings")
+def export_settings_save(req: ExportSettingsRequest):
+    """Opaque settings blob owned entirely by the frontend's Export panel
+    (slide assignments, sizes, positions, orphan resolutions) — persisted
+    on the session so the next project save carries it along (see
+    projects_save/projects_load below)."""
+    session = _get_session(req.session_id)
+    session.export_settings = req.settings
+    return {"ok": True}
+
+
+@app.post("/api/export/pptx/generate")
+def export_pptx_generate(req: PptxGenerateRequest):
+    """Builds a .pptx in memory from PNGs the frontend already rasterized
+    client-side (see ExportPanel.tsx — the live SVG is what's actually
+    cropped/rasterized, so this never needs a server-side SVG renderer).
+    `add_picture` embeds each image's bytes directly into the file, not a
+    path, so it opens identically on any machine."""
+    prs = Presentation()
+    prs.slide_width = Inches(req.slide_width_in)
+    prs.slide_height = Inches(req.slide_height_in)
+    blank_layout = prs.slide_layouts[6]
+    max_slide_number = max(s.slide_number for s in req.slides)
+    for _ in range(max_slide_number):
+        prs.slides.add_slide(blank_layout)
+
+    for slide_req in req.slides:
+        slide = prs.slides[slide_req.slide_number - 1]
+        for placement in slide_req.placements:
+            try:
+                png_bytes = base64.b64decode(placement.image_png_base64, validate=True)
+            except Exception as exc:
+                raise HTTPException(400, f"Invalid image data: {exc}") from exc
+            slide.shapes.add_picture(
+                io.BytesIO(png_bytes),
+                Inches(placement.x), Inches(placement.y),
+                Inches(placement.w), Inches(placement.h),
+            )
+        # Phase 2 wires the UI to these; the endpoint already accepts them
+        # so Phase 2 is a frontend-only change.
+        for block, default_pt in ((slide_req.header, 28.0), (slide_req.content, 16.0)):
+            if block is None:
+                continue
+            box = slide.shapes.add_textbox(Inches(block.x), Inches(block.y), Inches(block.w), Inches(block.h))
+            tf = box.text_frame
+            tf.word_wrap = True
+            lines = block.text.split('\n') or ['']
+            tf.text = lines[0]
+            tf.paragraphs[0].font.size = Pt(block.size or default_pt)
+            tf.paragraphs[0].font.name = block.font
+            for line in lines[1:]:
+                p = tf.add_paragraph()
+                p.text = line
+                p.font.size = Pt(block.size or default_pt)
+                p.font.name = block.font
+
+    buf = io.BytesIO()
+    prs.save(buf)
+    filename = _safe_filename(req.filename) + '.pptx'
+    return Response(
+        content=buf.getvalue(),
+        media_type='application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
+    )
+
+
 # ---------- routes: saved projects (SQLite-backed, survives restarts) ----------
 # Every route here reads `request.state.user_id`, set by auth_middleware —
 # these paths are never in PUBLIC_API_PATHS, so it's always present.
@@ -1138,7 +1291,11 @@ def projects_save(req: ProjectSaveRequest, request: Request):
     session = _get_session(req.session_id)
     if not req.project_id and project_store.count_projects(user_id) >= MAX_PROJECTS_PER_USER:
         raise HTTPException(409, f"Saved-project limit reached ({MAX_PROJECTS_PER_USER})")
-    data = project_store.spec_to_dict(session.spec)
+    # Wrapped (not a bare spec dict) so the Export panel's settings travel
+    # with the project — see Session.export_settings. "spec" key presence
+    # is how projects_load tells this format apart from a pre-export-panel
+    # row, which was the bare spec dict at the top level.
+    data = {"spec": project_store.spec_to_dict(session.spec), "export_settings": session.export_settings}
     try:
         pid = project_store.save_project(name, data, user_id, req.project_id)
     except PermissionError as exc:
@@ -1153,11 +1310,15 @@ def projects_load(req: ProjectIdRequest, request: Request):
     if project is None:
         raise HTTPException(404, f"No such project: {req.project_id}")
     try:
-        spec = project_store.spec_from_dict(project["data"])
+        raw = project["data"]
+        spec_dict = raw["spec"] if isinstance(raw, dict) and "spec" in raw else raw
+        spec = project_store.spec_from_dict(spec_dict)
         active = _first_diagram_id(spec)
         canvas_w, canvas_h = layout(spec.diagrams[active], spec)
         _space_connected_nodes(spec.diagrams[active])
         session = store.put(spec, active, canvas_w, canvas_h)
+        if isinstance(raw, dict):
+            session.export_settings = raw.get("export_settings", {})
         return _build_response(session)
     except (KeyError, ValueError) as exc:  # corrupt/old-format row, shouldn't happen but don't 500 opaquely
         raise HTTPException(400, f"Could not load project: {exc}") from exc
