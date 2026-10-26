@@ -18,6 +18,15 @@ http://dev-ai.site:8080 {
 }
 
 http://drawgen.dev-ai.site:8080 {
+	# `handle_path /docs/*` below only matches paths that already start
+	# with the literal "/docs/" — a bare "/docs" (no trailing slash, as
+	# every browser address bar produces when someone just types the
+	# folder name) doesn't match it at all and falls through to the SPA
+	# catch-all instead, serving the main app under the /docs URL. `redir`
+	# runs before `handle` in Caddy's directive order regardless of where
+	# it's written, so this catches it before that fallthrough happens.
+	redir /docs /docs/ permanent
+
 	handle /api/* {
 		reverse_proxy backend:8000
 	}
