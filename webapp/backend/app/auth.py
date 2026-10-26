@@ -50,6 +50,10 @@ def _conn():
             created_at DOUBLE PRECISION NOT NULL
         )"""
     )
+    # Added for /api/auth/logout: bumping this invalidates every token issued
+    # before the bump, since each token carries the version it was signed
+    # with and verify_token rejects a mismatch — see bump_token_version.
+    db.add_column_if_missing(conn, "users", "token_version", "INTEGER NOT NULL DEFAULT 0")
     return conn
 
 
@@ -88,10 +92,10 @@ def verify_password(password: str, salt_hex: str, expected_hash_hex: str) -> boo
     return hmac.compare_digest(digest_hex, expected_hash_hex)
 
 
-# ---------- tokens (HMAC-signed, not encrypted — payload is just id/username/expiry) ----------
-def make_token(user_id: str, username: str) -> str:
+# ---------- tokens (HMAC-signed, not encrypted — payload is id/username/expiry/version) ----------
+def make_token(user_id: str, username: str, token_version: int) -> str:
     expiry = int(time.time()) + TOKEN_TTL_SECONDS
-    payload = f"{user_id}:{username}:{expiry}"
+    payload = f"{user_id}:{username}:{expiry}:{token_version}"
     payload_b64 = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
     sig = hmac.new(_get_secret(), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
     return f"{payload_b64}.{sig}"
@@ -107,11 +111,19 @@ def verify_token(token: str) -> Optional[dict]:
         return None
     try:
         payload = base64.urlsafe_b64decode(payload_b64.encode("ascii")).decode("utf-8")
-        user_id, username, expiry = payload.split(":", 2)
+        user_id, username, expiry, token_version = payload.split(":", 3)
         expiry = int(expiry)
+        token_version = int(token_version)
     except (ValueError, UnicodeDecodeError):
         return None
     if time.time() > expiry:
+        return None
+    # Cryptographically valid and unexpired isn't enough on its own — a token
+    # signed before the user's last /api/auth/logout must still be rejected,
+    # so this is the one place verify_token needs a DB read rather than
+    # staying pure HMAC/expiry math.
+    current = get_user_by_id(user_id)
+    if current is None or current["token_version"] != token_version:
         return None
     return {"user_id": user_id, "username": username}
 
@@ -151,16 +163,29 @@ def create_user(username: str, password: str) -> dict:
 def get_user_by_username(username: str) -> Optional[dict]:
     with _conn() as conn:
         row = conn.execute(
-            "SELECT id, username, salt, pw_hash FROM users WHERE username = ?", (username,)
+            "SELECT id, username, salt, pw_hash, token_version FROM users WHERE username = ?", (username,)
         ).fetchone()
     if row is None:
         return None
-    return {"id": row[0], "username": row[1], "salt": row[2], "pw_hash": row[3]}
+    return {"id": row[0], "username": row[1], "salt": row[2], "pw_hash": row[3], "token_version": row[4]}
 
 
 def get_user_by_id(user_id: str) -> Optional[dict]:
     with _conn() as conn:
-        row = conn.execute("SELECT id, username FROM users WHERE id = ?", (user_id,)).fetchone()
+        row = conn.execute(
+            "SELECT id, username, token_version FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
     if row is None:
         return None
-    return {"id": row[0], "username": row[1]}
+    return {"id": row[0], "username": row[1], "token_version": row[2]}
+
+
+def bump_token_version(user_id: str) -> int:
+    """Invalidates every token issued for this user before now (see
+    verify_token). This app has no per-device session table, so there's no
+    narrower "log out just this device" to offer — every token is already
+    anonymous w.r.t. which device signed in, so any revocation is global."""
+    with _conn() as conn:
+        conn.execute("UPDATE users SET token_version = token_version + 1 WHERE id = ?", (user_id,))
+        row = conn.execute("SELECT token_version FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row[0] if row else 0

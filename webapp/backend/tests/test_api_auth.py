@@ -64,3 +64,30 @@ def test_login_unknown_user_same_error_as_wrong_password(client):
     r = client.post('/api/auth/login', json={'username': 'nobody', 'password': 'whatever1'})
     assert r.status_code == 401
     assert r.json()['detail'] == 'Wrong username or password'
+
+
+def test_logout_invalidates_existing_token(client):
+    r = client.post('/api/auth/signup', json={'username': 'erin', 'password': 'correcthorse1'})
+    headers = {'Authorization': f"Bearer {r.json()['token']}"}
+
+    r = client.post('/api/auth/logout', headers=headers)
+    assert r.status_code == 200
+
+    r = client.get('/api/auth/me', headers=headers)
+    assert r.status_code == 401
+
+
+def test_login_after_logout_issues_a_working_token(client):
+    client.post('/api/auth/signup', json={'username': 'frank', 'password': 'correcthorse1'})
+    old_token = client.post(
+        '/api/auth/login', json={'username': 'frank', 'password': 'correcthorse1'}
+    ).json()['token']
+    client.post('/api/auth/logout', headers={'Authorization': f'Bearer {old_token}'})
+
+    r = client.post('/api/auth/login', json={'username': 'frank', 'password': 'correcthorse1'})
+    new_token = r.json()['token']
+    assert new_token != old_token
+
+    r = client.get('/api/auth/me', headers={'Authorization': f'Bearer {new_token}'})
+    assert r.status_code == 200
+    assert r.json() == {'username': 'frank'}
