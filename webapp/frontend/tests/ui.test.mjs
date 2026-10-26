@@ -66,7 +66,7 @@ test("toolbar separates editing and file actions, with clear save and error stat
   assert.match(html, /<header class="topbar">/);
   assert.match(html, /class="editor-toolbar"/);
   assert.match(html, /New \/ Open/);
-  assert.match(html, /Editable diagram/);
+  assert.match(html, /Diagram editing tools/);
   assert.match(html, /Unsaved changes/);
   assert.match(html, /role="alert"/);
   assert.doesNotMatch(html, /local database/);
