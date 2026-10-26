@@ -24,3 +24,6 @@ webapp/deploy/.env
 # editors / OS
 .DS_Store
 Thumbs.db
+
+# Excel lock files — appear next to any .xlsx open in Excel, never source
+~$*.xlsx
