@@ -12,6 +12,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "webapp/frontend"],
       "port": 5173
+    },
+    {
+      "name": "diagram-gallery",
+      "runtimeExecutable": "webapp/backend/.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "http.server", "8899", "-d", "C:/Users/manav/AppData/Local/Temp/claude/C--Users-manav-OneDrive-Desktop-workspace-dungen/96f3a194-6495-4f66-bc6e-2701aee5c767/scratchpad/renders"],
+      "port": 8899
     }
   ]
 }

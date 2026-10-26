@@ -232,8 +232,19 @@ def _layout_container(n: Node, spec: Spec, lr=False, d: Diagram = None):
         n.w = max(n.w if spec.shape_of(n).is_container is False else 0,
                   w + 2 * SZ.PAD_C)
         n.h = h + SZ.PAD_C + SZ.HEADER_H
+        # Immediate children only - NOT the recursive _shift() (same trap its
+        # own docstring warns about for absolutize(), just unfixed here
+        # until now): a child that's itself a container already positioned
+        # ITS children correctly relative to ITSELF one recursion level ago,
+        # so recursing into them again here double-applies this PAD_C/
+        # HEADER_H offset to every descendant 2+ levels down - e.g. a
+        # grandchild lands HEADER_H past where its own (correctly-sized)
+        # parent box actually ends, overflowing it, while the overflow
+        # looks nothing like the fixed amount since it's whatever headroom
+        # the inner container happened to have left after its own sizing.
         for c in n.children:
-            _shift(c, SZ.PAD_C, SZ.HEADER_H)
+            c.x += SZ.PAD_C
+            c.y += SZ.HEADER_H
         n.w, n.h = SZ.snap(n.w), SZ.snap(n.h)
 
 
@@ -247,44 +258,113 @@ def _axis_gap(a_lo: float, a_hi: float, b_lo: float, b_hi: float) -> float:
     return -(min(a_hi, b_hi) - max(a_lo, b_lo))
 
 
+def _grow_room(d: Diagram, mover: Node, dx: float, dy: float):
+    """Open up (dx, dy) of room at `mover` for a label that needs more space
+    than its current gap gives it, and keep every container that owns it
+    honest about its own size.
+
+    Shifting `mover` alone would just relocate the overlap: whatever sibling
+    already sat on the far side of it is now sitting inside it instead
+    (containers are packed tight, which is exactly why the gap was too
+    small to begin with), and if `mover` has a parent, that parent's box no
+    longer actually contains it. So each step here does up to three things
+    together — shift (or, one level up, grow) the one thing that needs more
+    room, carry along whichever of its *siblings* sat further out in that
+    same direction so the new space doesn't immediately become a new
+    overlap, and resize the shared parent to fit. If the parent's own
+    resize pushes it past where it used to end, that parent is now the
+    thing that needs room at the next level up — so the same steps repeat
+    there, same as a growing container can itself crowd whatever sits
+    beside it. A top-level shape has no parent box to resize, but it still
+    has siblings — other top-level shapes its growth can just as easily
+    run into — so that carry step runs there too; the canvas itself is
+    what grows to fit, handled by `_fit_label_space`'s own caller. Stops as
+    soon as a level didn't actually need to grow.
+    """
+    def _siblings(n: Node):
+        if n.parent:
+            p = d.nodes.get(n.parent)
+            return (p.children if p is not None else []), p
+        return [x for x in d.nodes.values() if not x.parent], None
+
+    before = (mover.x, mover.y, mover.x + mover.w, mover.y + mover.h)
+    _shift(mover, dx, dy)
+    node = mover
+    while True:
+        sibs, p = _siblings(node)
+        for c in sibs:
+            if c is node:
+                continue
+            carry_x = (dx > 0 and c.x >= before[2]) or (dx < 0 and c.x + c.w <= before[0])
+            carry_y = (dy > 0 and c.y >= before[3]) or (dy < 0 and c.y + c.h <= before[1])
+            if carry_x or carry_y:
+                _shift(c, dx if carry_x else 0.0, dy if carry_y else 0.0)
+        if p is None:
+            return  # reached the top level - nothing left to grow, just shift clear of
+        max_x = max(c.x + c.w for c in p.children)
+        max_y = max(c.y + c.h for c in p.children)
+        new_w = max(p.w, max_x - p.x + SZ.PAD_C)
+        new_h = max(p.h, max_y - p.y + SZ.PAD_C)
+        grow_w, grow_h = new_w - p.w, new_h - p.h
+        if grow_w <= 0.01 and grow_h <= 0.01:
+            return
+        before = (p.x, p.y, p.x + p.w, p.y + p.h)
+        p.w, p.h = new_w, new_h
+        node, dx, dy = p, grow_w, grow_h
+
+
 def _fit_label_space(d: Diagram, spec: Spec, w: float, h: float):
     """SZ-12d lever 2 (space) — the fallback for render_svg.py's lever 1
-    (reroute): a trial render tells us which edges' labels are *still*
-    overshadowed even after the renderer tried routing every other edge
-    clear of them. What's left is a label that doesn't fit the gap between
-    its own two shapes no matter how anything else is routed — almost
-    always a short, direct edge between shapes sitting close together, with
-    nowhere for the caption to go but on top of whatever else passes
-    through that same corridor. Widen *that* gap, content-aware (only as
-    much as this specific label needs, via the same wrap-width math
-    `sizing.size_node` already uses for a node's own label) rather than a
-    flat guess, then let the caller re-render once against the corrected
-    positions. Only ever touches a direct, top-level pair — nested children
-    are off-limits here for the same reason the webapp's own
-    `_space_connected_nodes` keeps its hands off them: shifting a child in
-    absolute coordinates without its container resizing to match leaves it
-    sitting partly outside its own box.
+    (reroute): a trial render gives every labelled edge's *actual* wrapped
+    box, which this checks against the real gap between its own two shapes.
+    A label can end up too big for that gap two different ways, and both
+    need the same fix: another edge's line crossing it (lever 1 had every
+    chance to route that clear and couldn't), or nothing crossing it at all
+    — just its own box wider than the straight run it has to sit on, so it
+    spills into the neighbouring shapes on either side. That second case
+    has no line on top of it to detect, so checking only
+    `renderer.overshadowed_edges` (crossing-flagged edges) missed it
+    entirely: nodes paint over edges (see render_svg.py's draw order), so
+    the overflow doesn't show as two things visibly fighting for the same
+    pixels — it shows as the label's own text silently losing whatever
+    part landed under a box's fill, which is what reads as "content isn't
+    visible." Widen *that* gap, content-aware (the real measured box, not a
+    guess), then let the caller re-render once against the corrected
+    positions.
+
+    A pair whose two shapes sit in different containers (or one nested and
+    one not) is left alone — which container's layout should even change is
+    ambiguous there, unlike a pair that share one immediate parent (where
+    `_grow_room` can resize exactly that parent) or sit top-level together
+    (where `_grow_room` degenerates to the plain shift this used to do
+    unconditionally, since a node with no parent has nothing to grow).
     """
     from .render_svg import SvgRenderer   # deferred: avoids a hard import-time dependency for callers that never need lever 2
     renderer = SvgRenderer(spec)
-    renderer.render(d, w, h)   # trial pass purely to populate overshadowed_edges; the SVG itself is discarded
+    renderer.render(d, w, h)   # trial pass purely to populate label_boxes; the SVG itself is discarded
     moved = False
-    for e in renderer.overshadowed_edges:
-        a, b = d.nodes.get(e.source), d.nodes.get(e.target)
-        if a is None or b is None or a is b or a.parent or b.parent:
+    for e in d.edges:
+        box = renderer.label_boxes.get(id(e))
+        if box is None:
             continue
-        needed = (min(SZ.MAX_W, len(e.label) * SZ.CHAR_W) + 2 * SZ.PAD_X) if e.label else 0.0
+        a, b = d.nodes.get(e.source), d.nodes.get(e.target)
+        if a is None or b is None or a is b or a.parent != b.parent:
+            continue
+        needed_w, needed_h = box[2] - box[0], box[3] - box[1]
         hgap = _axis_gap(a.x, a.x + a.w, b.x, b.x + b.w)
         vgap = _axis_gap(a.y, a.y + a.h, b.y, b.y + b.h)
-        if max(hgap, vgap) >= needed:
-            continue
-        mover, anchor = (b, a) if a.cx <= b.cx else (a, b)
         if hgap >= vgap:
-            dx = (needed - hgap) * (1.0 if mover.cx >= anchor.cx else -1.0)
-            _shift(mover, dx, 0.0)
+            if hgap >= needed_w:
+                continue
+            mover, anchor = (b, a) if a.cx <= b.cx else (a, b)
+            dx = (needed_w - hgap) * (1.0 if mover.cx >= anchor.cx else -1.0)
+            _grow_room(d, mover, dx, 0.0)
         else:
-            dy = (needed - vgap) * (1.0 if mover.cy >= anchor.cy else -1.0)
-            _shift(mover, 0.0, dy)
+            if vgap >= needed_h:
+                continue
+            mover, anchor = (b, a) if a.cy <= b.cy else (a, b)
+            dy = (needed_h - vgap) * (1.0 if mover.cy >= anchor.cy else -1.0)
+            _grow_room(d, mover, 0.0, dy)
         moved = True
     if not moved:
         return w, h

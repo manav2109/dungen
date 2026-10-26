@@ -96,6 +96,15 @@ STUB = 8.0  # must match routing.CLEAR so the stub lands on a grid line
 # long enough to land one real elbow back from the arrowhead instead of
 # right on top of it.
 MIN_APPROACH = 24.0
+# Below this, pushing the elbow back isn't worth it even if there's room:
+# too close to STUB for a reader to tell it apart from the un-lengthened
+# case. Also the floor `_lengthen_final_approach` backs off to when the two
+# boxes are packed close enough that the full MIN_APPROACH would land the
+# extension inside the neighbouring box — better to arrive with less room
+# to spare than to give up and leave the elbow sitting right on the
+# arrowhead (see SZ-14 below).
+MIN_USEFUL_APPROACH = STUB * 2
+APPROACH_STEP = 4.0
 
 
 def _stub(pt, n: Node):
@@ -182,6 +191,33 @@ def _simplify_pts(pts):
     return out
 
 
+def _approach_lengths(final_len, prior_len):
+    """Decreasing extension amounts to try for the final approach.
+
+    SZ-14: the original version asked for exactly MIN_APPROACH or nothing —
+    which, between two boxes packed closer together than ~2×STUB +
+    MIN_APPROACH, asks for more room than exists between them (the TAKSY
+    `SMS` / `R-DB Delta Calculation` pair: a 20px gap can't fit a 24px final
+    run). That all-or-nothing target made the fix a no-op in exactly the
+    tightest, busiest spots a diagram has — the ones most in need of it —
+    and silently left the elbow sitting on the arrowhead instead. Try the
+    ideal length first, then back off toward whatever the gap actually
+    allows, down to the smallest extension still worth making
+    (MIN_USEFUL_APPROACH clear of the arrowhead); yields nothing if even
+    that floor doesn't fit in the leg available to push the elbow back
+    along.
+    """
+    room = prior_len - 2  # leave the prior leg itself non-degenerate
+    floor_extra = MIN_USEFUL_APPROACH - final_len
+    if floor_extra <= 0 or room < floor_extra:
+        return
+    extra = min(MIN_APPROACH - final_len, room)
+    while extra > floor_extra:
+        yield extra
+        extra -= APPROACH_STEP
+    yield floor_extra
+
+
 def _lengthen_final_approach(full, router):
     """Give the arrowhead a real straight run to sit on instead of landing
     right on an elbow.
@@ -193,9 +229,9 @@ def _lengthen_final_approach(full, router):
     dips around something, then turns into the target), that turn lands
     only 8px from the arrowhead — the elbow and the arrowhead visually
     collide instead of reading as a line arriving cleanly. Push the elbow
-    back along the leg before it so the final run is a real length, as long
-    as the extended run is still clear of every box and every already-routed
-    edge; otherwise leave the path exactly as the router found it.
+    back along the leg before it so the final run is as long as actually
+    fits, as long as the extended run is still clear of every box; otherwise
+    leave the path exactly as the router found it.
     """
     if len(full) < 3:
         return full
@@ -208,14 +244,9 @@ def _lengthen_final_approach(full, router):
     final_len = abs(p2[0] - p1[0]) + abs(p2[1] - p1[1])
     if final_len < 1 or final_len >= MIN_APPROACH:
         return full
-    need = MIN_APPROACH - final_len
     if final_vertical:
         prior_len = abs(p0[0] - p1[0])  # prior leg is horizontal - its length runs along x
-        if prior_len < need + 2:
-            return full
         sign = 1 if p2[1] > p1[1] else -1
-        shared_y = p1[1] - sign * need
-        new_p0, new_p1 = (p0[0], shared_y), (p1[0], shared_y)
         # Box collisions only - _congestion is a cost the A* search weighs
         # against alternatives, not a hard "nothing else may ever run near
         # here" rule, and it returns a number (truthy for any reuse at all,
@@ -223,18 +254,20 @@ def _lengthen_final_approach(full, router):
         # exactly the elbows most in need of this fix, in the busiest parts
         # of a diagram - where something else sharing the general corridor
         # is normal, not a sign the extension itself is unsafe.
-        if router._blocked_h(shared_y, p0[0], p1[0]) or router._blocked_v(p1[0], shared_y, p2[1]):
-            return full
+        for extra in _approach_lengths(final_len, prior_len):
+            shared_y = p1[1] - sign * extra
+            new_p0, new_p1 = (p0[0], shared_y), (p1[0], shared_y)
+            if not (router._blocked_h(shared_y, p0[0], p1[0]) or router._blocked_v(p1[0], shared_y, p2[1])):
+                return full[:-3] + [new_p0, new_p1, p2]
     else:
         prior_len = abs(p0[1] - p1[1])  # prior leg is vertical - its length runs along y
-        if prior_len < need + 2:
-            return full
         sign = 1 if p2[0] > p1[0] else -1
-        shared_x = p1[0] - sign * need
-        new_p0, new_p1 = (shared_x, p0[1]), (shared_x, p1[1])
-        if router._blocked_v(shared_x, p0[1], p1[1]) or router._blocked_h(p1[1], shared_x, p2[0]):
-            return full
-    return full[:-3] + [new_p0, new_p1, p2]
+        for extra in _approach_lengths(final_len, prior_len):
+            shared_x = p1[0] - sign * extra
+            new_p0, new_p1 = (shared_x, p0[1]), (shared_x, p1[1])
+            if not (router._blocked_v(shared_x, p0[1], p1[1]) or router._blocked_h(p1[1], shared_x, p2[0])):
+                return full[:-3] + [new_p0, new_p1, p2]
+    return full
 
 
 def _prefer_vertical(s: Node, t: Node) -> bool:
@@ -502,6 +535,17 @@ class SvgRenderer:
         # no A* routing involved). Commit whatever ends up actually drawn,
         # lengthened or not, so later edges see it.
         pts = _lengthen_final_approach(list(pts), r)
+        # A line's source face can carry an arrowhead too (marker-start,
+        # e.g. a bidirectional relation), and the elbow-too-close problem is
+        # symmetric there. Tried fixing it here the obvious way — reverse,
+        # reuse the same end-fix, reverse back — but that lengthens THIS
+        # edge's start *before* committing, which shifts what the next
+        # edge's A* search sees as congested (`_congestion`, consulted by
+        # `_path_is_bad`) and can knock a later edge onto a worse corridor
+        # it wouldn't otherwise have picked — net more detached arrowheads
+        # across the diagram, not fewer, when measured. Left as end-only
+        # until that can be done as its own pass after every edge's primary
+        # route is committed, instead of interleaved per-edge.
         r.commit(pts)
         return pts
 
@@ -1198,6 +1242,13 @@ class SvgRenderer:
         # 2: widen the gap between the two shapes a short, direct edge like
         # this connects, so there's actually room next render.
         self.overshadowed_edges = []
+        # Exposed so layout.py's lever 2 can size its gap-widening off the
+        # real wrapped box instead of a guess, and check every labelled
+        # direct pair - not just ones a crossing line happened to flag (a
+        # label can overflow its own gap into the neighbouring shapes with
+        # nothing else crossing it at all; nodes paint over edges, so that
+        # overflow silently loses whatever text lands under a box's fill).
+        self.label_boxes = label_boxes
         for e in d.edges:
             box = label_boxes.get(id(e))
             if box is None:

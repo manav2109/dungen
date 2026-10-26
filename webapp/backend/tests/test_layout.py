@@ -50,6 +50,75 @@ def test_layout_container_grows_to_fit_children(spec):
         assert c.h >= max_child_bottom - c.y - 1
 
 
+def test_layout_container_children_unaffected_by_a_repositioned_container():
+    """Every node's (x, y) is local to its own IMMEDIATE parent until
+    layout()'s later absolutize() pass cascades each level's position down
+    - that's the whole reason absolutize() exists, one level at a time,
+    instead of each node already carrying its full ancestry's offset. So
+    when OUTER positions INNER as one of its own children, INNER's
+    grandchildren (A, B) - expressed relative to INNER, not to OUTER -
+    must NOT move at all; only INNER itself does. Regression test for a
+    double-counted PAD_C/HEADER_H offset in _layout_container: shifting a
+    container's immediate children used the recursive _shift(), which also
+    walks into grandchildren - so moving INNER into place as OUTER's child
+    ALSO dragged A and B along by that same (PAD_C, HEADER_H), corrupting
+    their local-to-INNER coordinates by exactly OUTER's own padding
+    amount. Invisible with only one level of nesting - recursing into a
+    leaf's empty children list is a no-op - which is exactly why this
+    stayed latent until a two-level case surfaced it (a real diagram's
+    TAKSY/VPM sub-groups inside its top-level AD container: their own
+    children ended up pushed HEADER_H past the sub-group's own,
+    correctly-sized box)."""
+    from diagen.spec import Spec
+    from diagen.layout import _layout_container
+    spec = Spec.blank(use_defaults=True)
+
+    def _inner_with_children(parent):
+        inner = _node('INNER', parent=parent, type='group', label='Inner')
+        a = _node('A', parent='INNER', rank=1, order=1, label='A')
+        b = _node('B', parent='INNER', rank=2, order=1, label='B')
+        for n in (a, b):
+            n.w, n.h = 100.0, 40.0
+        inner.children = [a, b]
+        return inner, a, b
+
+    # INNER laid out standalone (parent=''), so it's never repositioned by
+    # anything above it - this is exactly the computation
+    # _layout_container(outer, ...) performs for INNER internally, one
+    # recursion level before OUTER ever touches INNER's own (x, y). Since
+    # it's deterministic from the same rank/order/w/h inputs, A and B's
+    # positions here double as "INNER's children right before OUTER moves
+    # INNER" for the nested run below - without needing to call
+    # _layout_container on the same nodes twice (which would double-apply
+    # the PAD_C/HEADER_H shift itself, independent of the bug under test).
+    inner0, a0, b0 = _inner_with_children('')
+    d0 = Diagram(id='D1', scenario='', title='t')
+    for n in (inner0, a0, b0):
+        d0.nodes[n.id] = n
+    _layout_container(inner0, spec, False, d0)
+    assert (inner0.x, inner0.y) == (0.0, 0.0), 'a standalone container should never reposition itself'
+
+    # Same INNER, now nested one level inside OUTER - single call.
+    outer = _node('OUTER', type='group', label='Outer')
+    inner, a, b = _inner_with_children('OUTER')
+    outer.children = [inner]
+    d = Diagram(id='D1', scenario='', title='t')
+    for n in (outer, inner, a, b):
+        d.nodes[n.id] = n
+    _layout_container(outer, spec, False, d)
+
+    # INNER's own movement, purely from OUTER positioning it as a child.
+    inner_dx, inner_dy = inner.x - inner0.x, inner.y - inner0.y
+    assert inner_dx or inner_dy, 'test is only meaningful if OUTER actually moved INNER'
+    for moved, baseline, nid in ((a, a0, 'A'), (b, b0, 'B')):
+        dx, dy = moved.x - baseline.x, moved.y - baseline.y
+        assert (dx, dy) == (0.0, 0.0), (
+            f"{nid} moved by ({dx}, {dy}) just because its container INNER "
+            f'moved by ({inner_dx}, {inner_dy}) as OUTER\'s own child - '
+            f"it's stored relative to INNER, so it should not have moved at all"
+        )
+
+
 def test_layout_lr_direction_uses_columns_not_rows(spec):
     d = spec.diagrams['D2']
     d.direction = 'left-right'
@@ -152,12 +221,7 @@ def test_fit_label_space_widens_an_unfixable_gap(spec):
     )
 
 
-def test_fit_label_space_leaves_nested_children_alone():
-    """Same top-level-only guard as the webapp's own _space_connected_nodes
-    (see main.py) - shifting a nested child in absolute coordinates without
-    its container resizing to match would leave it sitting outside its own
-    box, so a pair where either side has a parent must be left untouched
-    even if flagged as overshadowed."""
+def _nested_overshadow_case():
     from diagen.spec import Spec
     spec = Spec.blank(use_defaults=True)
     d = Diagram(id='OS', scenario='', title='Nested overshadow test')
@@ -172,9 +236,53 @@ def test_fit_label_space_leaves_nested_children_alone():
         d.nodes[n.id] = n
     d.edges.append(Edge(id='e_local', diagram='OS', source='HUB', target='NEIGHBOR',
                          relation='data_flow', label='Local sync data between hub and neighbor'))
+    return spec, d, container, hub, nbr
 
-    before = (hub.x, hub.w, nbr.x, nbr.w)
+
+def test_fit_label_space_widens_a_gap_between_contained_siblings():
+    """A label squeezed between two shapes that share one immediate parent
+    container needs the same fix a top-level pair gets — just with the
+    container kept honest about its own size (SZ-15 / `_grow_room`), not
+    left untouched the way an ambiguous cross-container pair still is (see
+    test_fit_label_space_leaves_different_containers_alone). Without this,
+    a label like this one has nowhere to go but overlapping its own two
+    shapes (nodes paint over edges, so the overlap shows as missing text,
+    not as two things visibly fighting for the same pixels) — exactly the
+    'content isn't visible' case a direct top-level pair never has, because
+    nothing before this stopped it from ever happening to a contained one."""
+    spec, d, container, hub, nbr = _nested_overshadow_case()
+    before_w = container.w
+
     w, h = _fit_label_space(d, spec, 620, 300)
-    after = (hub.x, hub.w, nbr.x, nbr.w)
 
-    assert before == after, 'lever 2 moved a nested child instead of leaving it for the container to own'
+    assert hub.x + hub.w <= nbr.x + 1e-6, 'widening must not just swap which shape overlaps the other'
+    assert container.w >= before_w, 'the gap only has room to grow if its container grew too'
+    max_child_right = max(c.x + c.w for c in container.children)
+    assert container.w >= max_child_right - container.x - 1, \
+        'container no longer actually contains the sibling it just helped make room for'
+
+    renderer = SvgRenderer(spec)
+    renderer.render(d, w, h)
+    assert renderer.overshadowed_edges == [], (
+        f'still overshadowed after lever 2: {[e.id for e in renderer.overshadowed_edges]}'
+    )
+
+
+def test_fit_label_space_leaves_different_containers_alone():
+    """A pair split across two different containers is left for a human (or
+    a future, more ambitious pass) rather than guessed at: unlike a shared
+    immediate parent, there's no single obviously-right container for
+    `_grow_room` to resize here, so lever 2 stays out of it entirely."""
+    spec, d, container, hub, nbr = _nested_overshadow_case()
+    other_box = Node(id='BOX2', diagram='OS', parent='', type='group', label='Box 2',
+                      x=640, y=0, w=300, h=300)
+    d.nodes['BOX2'] = other_box
+    nbr.parent = 'BOX2'
+    container.children = [hub]
+    other_box.children = [nbr]
+
+    before = (hub.x, hub.w, nbr.x, nbr.w, container.w, other_box.w)
+    _fit_label_space(d, spec, 940, 300)
+    after = (hub.x, hub.w, nbr.x, nbr.w, container.w, other_box.w)
+
+    assert before == after, 'lever 2 touched a pair split across two different containers'
