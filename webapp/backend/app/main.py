@@ -461,11 +461,106 @@ def _gen_id(prefix: str, existing: set) -> str:
 
 def _relayout(session: Session):
     w, h = layout(session.diagram, session.spec)
+    _space_connected_nodes(session.diagram)
     session.canvas_w, session.canvas_h = w, h
 
 
 # Room kept beyond the outermost shape so there is always somewhere to drag to.
 CANVAS_PAD = 240.0
+
+# Smallest face-to-face clearance a dragged node is allowed to leave against a
+# node it's directly connected to. Below this, the edge router has nowhere
+# clean to put the line and falls back to an ugly dip-under reroute. ~5cm on a
+# normal 96dpi screen — this canvas has no real physical unit, so it's a
+# screen-pixel approximation, not a precise conversion.
+MIN_EDGE_GAP = 190.0
+
+
+def _axis_gap(a_lo: float, a_hi: float, b_lo: float, b_hi: float) -> float:
+    """Clearance between two 1-D intervals; negative when they overlap (by
+    that much)."""
+    if a_hi <= b_lo:
+        return b_lo - a_hi
+    if b_hi <= a_lo:
+        return a_lo - b_hi
+    return -(min(a_hi, b_hi) - max(a_lo, b_lo))
+
+
+def _keep_clear_of(n: Node, other: Node, min_gap: float = MIN_EDGE_GAP) -> None:
+    """Jump `n` a short distance further from `other` if dragging it left less
+    than `min_gap` of clear room between their boxes — keeps the connector
+    between two directly-linked shapes from being squeezed into a messy
+    dip-under route. Only `n` moves; `other` (and whatever it's connected to)
+    stays put. Pushes along whichever axis is already the more "separated"
+    one, so a side-by-side pair stays side-by-side rather than jumping to a
+    stacked layout."""
+    if n is other:
+        return
+    hgap = _axis_gap(n.x, n.x + n.w, other.x, other.x + other.w)
+    vgap = _axis_gap(n.y, n.y + n.h, other.y, other.y + other.h)
+    if max(hgap, vgap) >= min_gap:
+        return
+    if hgap >= vgap:
+        dx = (min_gap - hgap) * (1.0 if n.cx >= other.cx else -1.0)
+        _shift(n, dx, 0.0)
+    else:
+        dy = (min_gap - vgap) * (1.0 if n.cy >= other.cy else -1.0)
+        _shift(n, 0.0, dy)
+
+
+def _keep_connections_clear(d, n: Node) -> None:
+    """Apply `_keep_clear_of` against every node `n` has a direct edge to.
+    Two passes so an earlier push (to clear neighbour A) doesn't quietly
+    re-crowd neighbour B — cheap, and converges for the common case of a
+    node with a handful of connections."""
+    for _ in range(2):
+        for e in d.edges:
+            if e.source == n.id:
+                other = d.nodes.get(e.target)
+            elif e.target == n.id:
+                other = d.nodes.get(e.source)
+            else:
+                continue
+            if other is not None:
+                _keep_clear_of(n, other)
+
+
+def _space_connected_nodes(d) -> None:
+    """Diagram-wide version of `_keep_connections_clear`, run after every
+    fresh layout (sample/upload/template/outline/auto-arrange/project-load) —
+    not just an interactive drag. `layout()`'s own rank spacing (SZ.GAP_X/
+    GAP_Y) is sized for short-or-no labels; two directly-connected nodes a
+    workbook happens to rank right next to each other can still end up only
+    a few pixels apart, which starves a long edge label of room to wrap and
+    forces it into the tall, heavily-stacked block that then overlaps
+    whatever else is nearby (as well as risking the dip-under reroute
+    `MIN_EDGE_GAP` exists for). Pushes whichever of the two already sits
+    further out, in the direction it's already offset, so the layout's
+    left-to-right/top-to-bottom flow stays intact — never flips which one
+    leads. Two passes for the same reason `_keep_connections_clear` uses them.
+
+    Top-level nodes only. `_shift`/`_keep_clear_of` move a node in absolute
+    coordinates and don't touch its ancestors, so applying this to a nested
+    child shoves it without the container it sits in growing to match —
+    the child ends up partly outside its own container, or (with many
+    cross-container edges, e.g. an EA landscape where most connections run
+    between children of different domains) repeatedly yanked around by
+    every edge touching it. Top-level-to-top-level is the one case this is
+    actually safe for."""
+    for _ in range(2):
+        for e in d.edges:
+            a, b = d.nodes.get(e.source), d.nodes.get(e.target)
+            if a is None or b is None or a is b or a.parent or b.parent:
+                continue
+            hgap = _axis_gap(a.x, a.x + a.w, b.x, b.x + b.w)
+            vgap = _axis_gap(a.y, a.y + a.h, b.y, b.y + b.h)
+            if max(hgap, vgap) >= MIN_EDGE_GAP:
+                continue
+            if hgap >= vgap:
+                mover, anchor = (b, a) if a.cx <= b.cx else (a, b)
+            else:
+                mover, anchor = (b, a) if a.cy <= b.cy else (a, b)
+            _keep_clear_of(mover, anchor)
 
 
 def _fit_canvas(session: Session) -> None:
@@ -706,12 +801,22 @@ def palette():
 
 @app.post("/api/sample", response_model=DiagramResponse)
 def load_sample(req: SampleRequest):
-    path = SAMPLES_DIR / req.name
-    if not path.exists() or path.suffix != ".xlsx":
+    # `req.name` is attacker-controlled: resolve it and confirm it really is a
+    # file directly inside samples/, the same guard `download_sample` already
+    # applies — without it a crafted name (e.g. "../../../../some/file.xlsx")
+    # could make the backend parse and return the contents of any .xlsx file
+    # reachable on disk.
+    path = (SAMPLES_DIR / req.name).resolve()
+    try:
+        inside = path.parent == SAMPLES_DIR.resolve()
+    except OSError:
+        inside = False
+    if not inside or not path.exists() or path.suffix != ".xlsx":
         raise HTTPException(404, f"No such sample: {req.name}")
     spec = Spec(str(path), use_defaults=True)
     active = _first_diagram_id(spec)
     canvas_w, canvas_h = layout(spec.diagrams[active], spec)
+    _space_connected_nodes(spec.diagrams[active])
     session = store.put(spec, active, canvas_w, canvas_h)
     return _build_response(session)
 
@@ -730,6 +835,7 @@ async def upload(file: UploadFile = File(...)):
     active = _first_diagram_id(spec)
     try:
         canvas_w, canvas_h = layout(spec.diagrams[active], spec)
+        _space_connected_nodes(spec.diagrams[active])
     except KeyError as exc:
         raise HTTPException(400, f"Layout failed: {exc}") from exc
     session = store.put(spec, active, canvas_w, canvas_h)
@@ -773,6 +879,7 @@ def reposition(req: RepositionRequest):
     session.push_undo()
     dx, dy = req.x - node.x, req.y - node.y
     _shift(node, dx, dy)  # moves the node and, if it's a container, its children too
+    _keep_connections_clear(session.diagram, node)
     return _build_response(session)
 
 
@@ -880,6 +987,10 @@ def edge_create(req: EdgeCreateRequest):
     eid = _gen_id('e', {e.id for e in d.edges})
     d.edges.append(Edge(id=eid, diagram=session.active_id, source=req.source_id,
                          target=req.target_id, relation=req.relation_type, label=req.label))
+    # Connecting two shapes that already happen to sit close together hits the
+    # same messy dip-under route as dragging one in close — jump the target
+    # clear of the source the same way reposition does.
+    _keep_clear_of(d.nodes[req.target_id], d.nodes[req.source_id])
     return _build_response(session)
 
 
@@ -981,6 +1092,7 @@ def template_generate(req: TemplateRequest):
     spec.load_rows(built['nodes'], built['edges'], title=built['title'])
     d = spec.diagrams['D1']
     canvas_w, canvas_h = layout(d, spec)
+    _space_connected_nodes(d)
     session = store.put(spec, 'D1', canvas_w, canvas_h)
     return _build_response(session)
 
@@ -996,6 +1108,7 @@ def outline_generate(req: OutlineRequest):
     spec.load_rows(built['nodes'], built['edges'], title='Outline')
     d = spec.diagrams['D1']
     canvas_w, canvas_h = layout(d, spec)
+    _space_connected_nodes(d)
     session = store.put(spec, 'D1', canvas_w, canvas_h)
     return _build_response(session)
 
@@ -1043,6 +1156,7 @@ def projects_load(req: ProjectIdRequest, request: Request):
         spec = project_store.spec_from_dict(project["data"])
         active = _first_diagram_id(spec)
         canvas_w, canvas_h = layout(spec.diagrams[active], spec)
+        _space_connected_nodes(spec.diagrams[active])
         session = store.put(spec, active, canvas_w, canvas_h)
         return _build_response(session)
     except (KeyError, ValueError) as exc:  # corrupt/old-format row, shouldn't happen but don't 500 opaquely

@@ -132,3 +132,36 @@ def test_workbook_uses_defaults_and_overrides_them_locally(tmp_path):
     assert loaded.shapes['application_component'].default_w == 180
     assert loaded.lines['association'].style == 'dashed'
     assert loaded.lines['association'].target_end == 'filled arrow'
+
+
+def test_edges_without_an_edge_id_column_still_get_distinct_ids(tmp_path):
+    """Regression: an Edges sheet with no edge_id column (or one left blank)
+    isn't rare — it previously meant every such row loaded as id=''. Edge.id
+    is later used as a dict key wherever a render needs to track more than
+    one edge (render_svg's geoms/_edge_segs), so every blank-id edge
+    silently collided on the same key — on a workbook with many such edges,
+    the *entire diagram* rendered every edge as a copy of whichever one was
+    computed last."""
+    from openpyxl import Workbook
+
+    path = tmp_path / 'no-edge-ids.xlsx'
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    nodes = wb.create_sheet('Nodes')
+    nodes.append(['diagram_id', 'node_id', 'parent_id', 'entity_type', 'label'])
+    for nid in ('A', 'B', 'C', 'D'):
+        nodes.append(['D1', nid, '', 'business_actor', nid])
+
+    # no edge_id column at all - matches a real-world workbook that never had one
+    edges = wb.create_sheet('Edges')
+    edges.append(['diagram_id', 'source_id', 'target_id', 'relation_type'])
+    edges.append(['D1', 'A', 'B', 'association'])
+    edges.append(['D1', 'B', 'C', 'association'])
+    edges.append(['D1', 'C', 'D', 'association'])
+    wb.save(path)
+
+    loaded = Spec(path, use_defaults=True)
+    ids = [e.id for e in loaded.diagrams['D1'].edges]
+    assert all(ids), f'every edge should get a non-empty id, got {ids}'
+    assert len(set(ids)) == len(ids), f'ids must be distinct, got {ids}'

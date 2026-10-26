@@ -1,7 +1,8 @@
 """Tests for layout.py: ranked-row placement, container auto-fit, auto-rank."""
 from __future__ import annotations
-from diagen.layout import layout, _auto_rank
+from diagen.layout import layout, _auto_rank, _fit_label_space, _axis_gap
 from diagen.model import Diagram, Node, Edge
+from diagen.render_svg import SvgRenderer
 
 
 def _node(id, parent='', type='task', label=None, rank=0, order=0):
@@ -102,3 +103,78 @@ def test_layout_route_right_hint_widens_canvas(spec):
     w, h = layout(d, spec)
     assert any('route:right' in e.hint for e in d.edges)
     assert w > 0  # canvas accounted for the detour margin without crashing
+
+
+def _overshadow_case():
+    """Same geometry as test_render_svg.py's
+    test_reroute_alone_cannot_clear_a_label_with_nowhere_to_go: HUB/NEIGHBOR
+    span the whole canvas with only a 30px gap, so TOP->BOT (pinned to that
+    gap) has no detour room - lever 1 (reroute) provably can't clear it
+    there. This is lever 2's (space) job."""
+    d = Diagram(id='OS', scenario='', title='Overshadow test')
+    hub = Node(id='HUB', diagram='OS', parent='', type='application_component', label='Hub',
+               x=0, y=200, w=280, h=50)
+    nbr = Node(id='NEIGHBOR', diagram='OS', parent='', type='application_component', label='Neighbor',
+               x=310, y=200, w=280, h=50)
+    top = Node(id='TOP', diagram='OS', parent='', type='application_component', label='Top',
+               x=280, y=0, w=30, h=40)
+    bot = Node(id='BOT', diagram='OS', parent='', type='application_component', label='Bottom',
+               x=280, y=450, w=30, h=40)
+    for n in (hub, nbr, top, bot):
+        d.nodes[n.id] = n
+    d.edges.append(Edge(id='e_local', diagram='OS', source='HUB', target='NEIGHBOR',
+                         relation='data_flow', label='Local sync data between hub and neighbor'))
+    d.edges.append(Edge(id='e_vert', diagram='OS', source='TOP', target='BOT',
+                         relation='data_flow', label='V'))
+    return d
+
+
+def test_fit_label_space_widens_an_unfixable_gap(spec):
+    """SZ-12d lever 2 (space): once reroute alone can't clear an overshadowed
+    label (see test_render_svg.py's reroute-limit test for proof that this
+    exact geometry needs it), _fit_label_space must widen the HUB-NEIGHBOR
+    gap by exactly what the label needs, and a re-render against the result
+    must come out fully clear - not just "less bad"."""
+    d = _overshadow_case()
+    gap_before = _axis_gap(d.nodes['HUB'].x, d.nodes['HUB'].x + d.nodes['HUB'].w,
+                            d.nodes['NEIGHBOR'].x, d.nodes['NEIGHBOR'].x + d.nodes['NEIGHBOR'].w)
+
+    w, h = _fit_label_space(d, spec, 590, 500)
+
+    gap_after = _axis_gap(d.nodes['HUB'].x, d.nodes['HUB'].x + d.nodes['HUB'].w,
+                           d.nodes['NEIGHBOR'].x, d.nodes['NEIGHBOR'].x + d.nodes['NEIGHBOR'].w)
+    assert gap_after > gap_before, 'lever 2 did not widen the gap it was supposed to fix'
+
+    renderer = SvgRenderer(spec)
+    renderer.render(d, w, h)
+    assert renderer.overshadowed_edges == [], (
+        f'still overshadowed after lever 2: {[e.id for e in renderer.overshadowed_edges]}'
+    )
+
+
+def test_fit_label_space_leaves_nested_children_alone():
+    """Same top-level-only guard as the webapp's own _space_connected_nodes
+    (see main.py) - shifting a nested child in absolute coordinates without
+    its container resizing to match would leave it sitting outside its own
+    box, so a pair where either side has a parent must be left untouched
+    even if flagged as overshadowed."""
+    from diagen.spec import Spec
+    spec = Spec.blank(use_defaults=True)
+    d = Diagram(id='OS', scenario='', title='Nested overshadow test')
+    container = Node(id='BOX', diagram='OS', parent='', type='group', label='Box',
+                      x=0, y=0, w=620, h=300)
+    hub = Node(id='HUB', diagram='OS', parent='BOX', type='application_component', label='Hub',
+               x=10, y=120, w=280, h=50)
+    nbr = Node(id='NEIGHBOR', diagram='OS', parent='BOX', type='application_component', label='Neighbor',
+               x=320, y=120, w=280, h=50)
+    container.children = [hub, nbr]
+    for n in (container, hub, nbr):
+        d.nodes[n.id] = n
+    d.edges.append(Edge(id='e_local', diagram='OS', source='HUB', target='NEIGHBOR',
+                         relation='data_flow', label='Local sync data between hub and neighbor'))
+
+    before = (hub.x, hub.w, nbr.x, nbr.w)
+    w, h = _fit_label_space(d, spec, 620, 300)
+    after = (hub.x, hub.w, nbr.x, nbr.w)
+
+    assert before == after, 'lever 2 moved a nested child instead of leaving it for the container to own'

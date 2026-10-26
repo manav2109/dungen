@@ -137,12 +137,21 @@ class Spec:
         d.nodes[n.id] = n
 
     def _add_edge(self, r):
-        e = Edge(id=_s(r.get('edge_id')), diagram=_s(r.get('diagram_id')) or 'D1',
+        diagram_id = _s(r.get('diagram_id')) or 'D1'
+        d = self.diagrams.setdefault(diagram_id, Diagram(diagram_id, '', diagram_id))
+        # A row with no edge_id value (an Edges sheet that just never had the
+        # column filled in — not rare) must not silently become '' for every
+        # such row: edge.id is used as a dict key wherever more than one edge
+        # needs tracking per render (render_svg's geoms/_edge_segs, the API's
+        # edge lookups), so every blank-id edge would collide on the same key
+        # and overwrite each other there — e.g. every edge in the diagram
+        # ending up drawn as a copy of whichever one was processed last.
+        eid = _s(r.get('edge_id')) or f'e_auto{len(d.edges) + 1}'
+        e = Edge(id=eid, diagram=diagram_id,
                  source=_s(r['source_id']), target=_s(r['target_id']),
                  relation=_s(r['relation_type']), label=_s(r.get('label')),
                  hint=_s(r.get('waypoint_hint')),
                  sport=_s(r.get('source_port')), tport=_s(r.get('target_port')))
-        d = self.diagrams.setdefault(e.diagram, Diagram(e.diagram, '', e.diagram))
         d.edges.append(e)
 
     def load_csv(self, nodes_csv, edges_csv=None, diagram_id=None, title=None):

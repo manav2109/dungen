@@ -237,6 +237,62 @@ def _layout_container(n: Node, spec: Spec, lr=False, d: Diagram = None):
         n.w, n.h = SZ.snap(n.w), SZ.snap(n.h)
 
 
+def _axis_gap(a_lo: float, a_hi: float, b_lo: float, b_hi: float) -> float:
+    """Clearance between two 1-D intervals; negative when they overlap (by
+    that much)."""
+    if a_hi <= b_lo:
+        return b_lo - a_hi
+    if b_hi <= a_lo:
+        return a_lo - b_hi
+    return -(min(a_hi, b_hi) - max(a_lo, b_lo))
+
+
+def _fit_label_space(d: Diagram, spec: Spec, w: float, h: float):
+    """SZ-12d lever 2 (space) — the fallback for render_svg.py's lever 1
+    (reroute): a trial render tells us which edges' labels are *still*
+    overshadowed even after the renderer tried routing every other edge
+    clear of them. What's left is a label that doesn't fit the gap between
+    its own two shapes no matter how anything else is routed — almost
+    always a short, direct edge between shapes sitting close together, with
+    nowhere for the caption to go but on top of whatever else passes
+    through that same corridor. Widen *that* gap, content-aware (only as
+    much as this specific label needs, via the same wrap-width math
+    `sizing.size_node` already uses for a node's own label) rather than a
+    flat guess, then let the caller re-render once against the corrected
+    positions. Only ever touches a direct, top-level pair — nested children
+    are off-limits here for the same reason the webapp's own
+    `_space_connected_nodes` keeps its hands off them: shifting a child in
+    absolute coordinates without its container resizing to match leaves it
+    sitting partly outside its own box.
+    """
+    from .render_svg import SvgRenderer   # deferred: avoids a hard import-time dependency for callers that never need lever 2
+    renderer = SvgRenderer(spec)
+    renderer.render(d, w, h)   # trial pass purely to populate overshadowed_edges; the SVG itself is discarded
+    moved = False
+    for e in renderer.overshadowed_edges:
+        a, b = d.nodes.get(e.source), d.nodes.get(e.target)
+        if a is None or b is None or a is b or a.parent or b.parent:
+            continue
+        needed = (min(SZ.MAX_W, len(e.label) * SZ.CHAR_W) + 2 * SZ.PAD_X) if e.label else 0.0
+        hgap = _axis_gap(a.x, a.x + a.w, b.x, b.x + b.w)
+        vgap = _axis_gap(a.y, a.y + a.h, b.y, b.y + b.h)
+        if max(hgap, vgap) >= needed:
+            continue
+        mover, anchor = (b, a) if a.cx <= b.cx else (a, b)
+        if hgap >= vgap:
+            dx = (needed - hgap) * (1.0 if mover.cx >= anchor.cx else -1.0)
+            _shift(mover, dx, 0.0)
+        else:
+            dy = (needed - vgap) * (1.0 if mover.cy >= anchor.cy else -1.0)
+            _shift(mover, 0.0, dy)
+        moved = True
+    if not moved:
+        return w, h
+    max_x = max(n.x + n.w for n in d.nodes.values())
+    max_y = max(n.y + n.h for n in d.nodes.values())
+    return max(w, max_x + SZ.MARGIN), max(h, max_y + SZ.MARGIN)
+
+
 def layout(d: Diagram, spec: Spec):
     _auto_rank(d)
     lr = 'lr' in (d.direction or '').lower() or 'left' in (d.direction or '').lower()
@@ -282,4 +338,5 @@ def layout(d: Diagram, spec: Spec):
     for t in tops:
         _shift(t, SZ.MARGIN, SZ.MARGIN + 34)  # room for title
     extra = 70 if any('route:right' in e.hint for e in d.edges) else 0
-    return max_x + 2 * SZ.MARGIN + extra, max_y + 2 * SZ.MARGIN + 34
+    w, h = max_x + 2 * SZ.MARGIN + extra, max_y + 2 * SZ.MARGIN + 34
+    return _fit_label_space(d, spec, w, h)

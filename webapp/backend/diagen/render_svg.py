@@ -61,6 +61,18 @@ def _stable_hash(*parts) -> int:
     return zlib.crc32('\x1f'.join(str(p) for p in parts).encode('utf-8'))
 
 
+def _attr(value: str) -> str:
+    """Escape a value for use inside a double-quoted SVG attribute.
+
+    fill/stroke/color values come straight from user input (node overrides,
+    style rules, uploaded Shape_Library/Line_Rules rows) and are otherwise
+    the only attribute values in this renderer not run through `escape()` —
+    unescaped, a value like `"/><script>...` breaks out of the attribute and
+    injects arbitrary markup into the SVG this app `innerHTML`s into the DOM.
+    """
+    return escape(value, {'"': '&quot;'})
+
+
 # Separation between two parallel horizontal edge runs, and the clearance an
 # edge keeps from a node box it passes.
 LANE_GAP = 9.0
@@ -79,6 +91,11 @@ LABEL_MAX_LINES = 3
 
 
 STUB = 8.0  # must match routing.CLEAR so the stub lands on a grid line
+# How long the final straight run into an arrowhead should read as, when the
+# router's own path would otherwise leave it pinned at exactly STUB (8px) —
+# long enough to land one real elbow back from the arrowhead instead of
+# right on top of it.
+MIN_APPROACH = 24.0
 
 
 def _stub(pt, n: Node):
@@ -129,6 +146,25 @@ def _slide_on_face(pt, n: Node, off: float):
     return pt
 
 
+CORNER_MARGIN = 10.0  # keep a connector's face position clear of a rounded corner's curve
+
+
+def _away_from_corner(pos, lo, hi, margin=CORNER_MARGIN):
+    """Keep a point on a box face at least `margin` from either end.
+
+    A rounded corner's curve recedes from the bounding box before the box's
+    own edge actually ends there - a connector landing mathematically "on
+    the face" but within that curve's reach draws into the gap between the
+    curve and the straight part of the border instead of touching the
+    visible shape. Only clamps when the face has real room to spare; one too
+    short for any margin is left centred rather than pushed somewhere
+    arbitrary.
+    """
+    if hi - lo <= 2 * margin:
+        return (lo + hi) / 2
+    return min(max(pos, lo + margin), hi - margin)
+
+
 def _simplify_pts(pts):
     """Drop duplicate and collinear points so the path is bend-to-bend."""
     out = []
@@ -144,6 +180,61 @@ def _simplify_pts(pts):
         else:
             i += 1
     return out
+
+
+def _lengthen_final_approach(full, router):
+    """Give the arrowhead a real straight run to sit on instead of landing
+    right on an elbow.
+
+    `_route_around`'s path always ends by stepping from the router's last
+    grid point to the target's own face point — a fixed STUB-length (8px)
+    hop, by construction (see `_stub`). When the leg just before that hop
+    runs a different direction (the common case: the route doubles back or
+    dips around something, then turns into the target), that turn lands
+    only 8px from the arrowhead — the elbow and the arrowhead visually
+    collide instead of reading as a line arriving cleanly. Push the elbow
+    back along the leg before it so the final run is a real length, as long
+    as the extended run is still clear of every box and every already-routed
+    edge; otherwise leave the path exactly as the router found it.
+    """
+    if len(full) < 3:
+        return full
+    p0, p1, p2 = full[-3], full[-2], full[-1]
+    final_vertical = abs(p2[0] - p1[0]) < 0.5
+    prior_vertical = abs(p0[0] - p1[0]) < 0.5
+    if final_vertical == prior_vertical:
+        return full  # a straight continuation (or a diagonal, which shouldn't
+                      # happen here) - no elbow sitting right on the arrowhead
+    final_len = abs(p2[0] - p1[0]) + abs(p2[1] - p1[1])
+    if final_len < 1 or final_len >= MIN_APPROACH:
+        return full
+    need = MIN_APPROACH - final_len
+    if final_vertical:
+        prior_len = abs(p0[0] - p1[0])  # prior leg is horizontal - its length runs along x
+        if prior_len < need + 2:
+            return full
+        sign = 1 if p2[1] > p1[1] else -1
+        shared_y = p1[1] - sign * need
+        new_p0, new_p1 = (p0[0], shared_y), (p1[0], shared_y)
+        # Box collisions only - _congestion is a cost the A* search weighs
+        # against alternatives, not a hard "nothing else may ever run near
+        # here" rule, and it returns a number (truthy for any reuse at all,
+        # however incidental) rather than a yes/no. Vetoing on it rejected
+        # exactly the elbows most in need of this fix, in the busiest parts
+        # of a diagram - where something else sharing the general corridor
+        # is normal, not a sign the extension itself is unsafe.
+        if router._blocked_h(shared_y, p0[0], p1[0]) or router._blocked_v(p1[0], shared_y, p2[1]):
+            return full
+    else:
+        prior_len = abs(p0[1] - p1[1])  # prior leg is vertical - its length runs along y
+        if prior_len < need + 2:
+            return full
+        sign = 1 if p2[0] > p1[0] else -1
+        shared_x = p1[0] - sign * need
+        new_p0, new_p1 = (shared_x, p0[1]), (shared_x, p1[1])
+        if router._blocked_v(shared_x, p0[1], p1[1]) or router._blocked_h(p1[1], shared_x, p2[0]):
+            return full
+    return full[:-3] + [new_p0, new_p1, p2]
 
 
 def _prefer_vertical(s: Node, t: Node) -> bool:
@@ -167,6 +258,21 @@ def _prefer_vertical(s: Node, t: Node) -> bool:
     if overlap_x and not overlap_y:
         return True             # stacked — arrow should touch top/bottom faces
     return abs(t.cy - s.cy) >= abs(t.cx - s.cx)
+
+
+def _fan_frac(idx: int, n: int) -> float:
+    """Where the idx-th of n parallel connectors sharing one hub should jog,
+    spread so they read as n separate lines instead of running on top of
+    each other. Same SZ-12b/SZ-13 spread the vertical branch's fan-out uses
+    (shelved rather than proportional past 6, so separation stays large and
+    bounded instead of shrinking to near-zero as n grows) — pulled out here
+    so the horizontal branch's convergence/divergence spread (SZ-12c) can
+    use it too, on the jog position as well as the entry/exit point."""
+    if n <= 6:
+        return 0.24 + 0.52 * (idx / (n - 1))
+    k = min(5, max(3, (n + 2) // 3))
+    shelf = idx % k
+    return 0.12 + 0.76 * (shelf / (k - 1))
 
 
 class SvgRenderer:
@@ -193,7 +299,7 @@ class SvgRenderer:
             self.defs[mid] = (
                 f'<marker id="{mid}" viewBox="0 0 {mw} {mh}" markerWidth="{mw}" markerHeight="{mh}" '
                 f'refX="{refx}" refY="{refy}" orient="auto-start-reverse" '
-                f'markerUnits="userSpaceOnUse">{body.format(c=color)}</marker>')
+                f'markerUnits="userSpaceOnUse">{body.format(c=_attr(color))}</marker>')
         return mid
 
     # ---------- text ----------
@@ -226,16 +332,16 @@ class SvgRenderer:
         x, y, w, h = n.x, n.y, n.w, n.h
         shape = s.shape.lower()
         label = self._text(n.cx, n.cy, n.lines)
-        A = f'stroke="{st}" stroke-width="1.2"'
+        A = f'stroke="{_attr(st)}" stroke-width="1.2"'
 
         if s.is_container:
             dash = ' stroke-dasharray="6,4"' if 'dashed' in shape else ''
-            return (f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" fill="{fill}" {A}{dash}/>'
+            return (f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="4" fill="{_attr(fill)}" {A}{dash}/>'
                     + self._text(x + 10, y + 15, [n.label], 13, 'bold', 'start', '#555555'))
         if s.auto == 'rows':
             rows = n.rows()
             out = [f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="white" {A}/>',
-                   f'<rect x="{x}" y="{y}" width="{w}" height="{SZ.TITLE_H}" fill="{fill if fill != "#FFFFFF" else "#E8E8E8"}" {A}/>',
+                   f'<rect x="{x}" y="{y}" width="{w}" height="{SZ.TITLE_H}" fill="{_attr(fill if fill != "#FFFFFF" else "#E8E8E8")}" {A}/>',
                    self._text(n.cx, y + SZ.TITLE_H / 2, [n.label], 12, 'bold')]
             has_ports = 'ports=' in (n.meta or '')
             for i, r in enumerate(rows):
@@ -251,59 +357,59 @@ class SvgRenderer:
             return ''.join(out)
         if 'person_card' in n.type:
             name, _, title = n.label.partition(' — ')
-            return (f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="8" fill="{fill}" {A}/>'
-                    f'<circle cx="{x+22}" cy="{n.cy}" r="14" fill="#E8EEF9" stroke="{st}"/>'
+            return (f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="8" fill="{_attr(fill)}" {A}/>'
+                    f'<circle cx="{x+22}" cy="{n.cy}" r="14" fill="#E8EEF9" stroke="{_attr(st)}"/>'
                     f'<circle cx="{x+22}" cy="{n.cy-4}" r="5" fill="{st}"/>'
                     f'<path d="M{x+13},{n.cy+9} a9,7 0 0 1 18,0" fill="{st}"/>'
                     + self._text(x + 44, n.cy - 8, [name], 12, 'bold', 'start')
                     + self._text(x + 44, n.cy + 9, [title or ''], 10.5, 'normal', 'start', '#666666'))
         if 'stadium' in shape or 'pill' in shape:
-            return f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{h/2}" fill="{fill}" {A}/>' + label
+            return f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{h/2}" fill="{_attr(fill)}" {A}/>' + label
         if 'diamond' in shape:
             pts = f'{n.cx},{y} {x+w},{n.cy} {n.cx},{y+h} {x},{n.cy}'
-            return f'<polygon points="{pts}" fill="{fill}" {A}/>' + label
+            return f'<polygon points="{pts}" fill="{_attr(fill)}" {A}/>' + label
         if 'parallelogram' in shape:
             k = 14
             pts = f'{x+k},{y} {x+w},{y} {x+w-k},{y+h} {x},{y+h}'
-            return f'<polygon points="{pts}" fill="{fill}" {A}/>' + label
+            return f'<polygon points="{pts}" fill="{_attr(fill)}" {A}/>' + label
         if 'hexagon' in shape:
             k = min(22, w * 0.16)
             pts = f'{x+k},{y} {x+w-k},{y} {x+w},{n.cy} {x+w-k},{y+h} {x+k},{y+h} {x},{n.cy}'
-            return f'<polygon points="{pts}" fill="{fill}" {A}/>' + label
+            return f'<polygon points="{pts}" fill="{_attr(fill)}" {A}/>' + label
         if 'cylinder' in shape:
             ry = 9
-            return (f'<path d="M{x},{y+ry} a{w/2},{ry} 0 0 1 {w},0 v{h-2*ry} a{w/2},{ry} 0 0 1 -{w},0 z" fill="{fill}" {A}/>'
+            return (f'<path d="M{x},{y+ry} a{w/2},{ry} 0 0 1 {w},0 v{h-2*ry} a{w/2},{ry} 0 0 1 -{w},0 z" fill="{_attr(fill)}" {A}/>'
                     f'<path d="M{x},{y+ry} a{w/2},{ry} 0 0 0 {w},0" fill="none" {A}/>'
                     + self._text(n.cx, n.cy + ry / 2, n.lines))
         if 'cloud' in shape:
             return (f'<path d="M{x+w*.25},{y+h*.9} h{w*.55} a{w*.16},{h*.22} 0 0 0 {w*.13},-{h*.38} '
                     f'a{w*.15},{h*.25} 0 0 0 -{w*.15},-{h*.30} a{w*.18},{h*.28} 0 0 0 -{w*.34},-{h*.08} '
                     f'a{w*.16},{h*.25} 0 0 0 -{w*.27},{h*.12} a{w*.15},{h*.24} 0 0 0 {w*.08},{h*.64} z" '
-                    f'fill="{fill}" {A}/>' + label)
+                    f'fill="{_attr(fill)}" {A}/>' + label)
         if '3d box' in shape:
             d = 10
-            return (f'<rect x="{x}" y="{y+d}" width="{w-d}" height="{h-d}" fill="{fill}" {A}/>'
-                    f'<polygon points="{x},{y+d} {x+d},{y} {x+w},{y} {x+w-d},{y+d}" fill="{fill}" {A}/>'
-                    f'<polygon points="{x+w-d},{y+d} {x+w},{y} {x+w},{y+h-d} {x+w-d},{y+h}" fill="{fill}" {A}/>'
+            return (f'<rect x="{x}" y="{y+d}" width="{w-d}" height="{h-d}" fill="{_attr(fill)}" {A}/>'
+                    f'<polygon points="{x},{y+d} {x+d},{y} {x+w},{y} {x+w-d},{y+d}" fill="{_attr(fill)}" {A}/>'
+                    f'<polygon points="{x+w-d},{y+d} {x+w},{y} {x+w},{y+h-d} {x+w-d},{y+h}" fill="{_attr(fill)}" {A}/>'
                     + self._text(n.cx - d / 2, n.cy + d / 2, n.lines))
         if 'chevron' in shape:
             k = 18
             pts = f'{x},{y} {x+w-k},{y} {x+w},{n.cy} {x+w-k},{y+h} {x},{y+h} {x+k},{n.cy}'
-            return f'<polygon points="{pts}" fill="{fill}" {A}/>' + label
+            return f'<polygon points="{pts}" fill="{_attr(fill)}" {A}/>' + label
         if 'wavy bottom' in shape:
             return (f'<path d="M{x},{y} h{w} v{h*.75} c{-w*.25},{h*.35} {-w*.5},{-h*.2} {-w},{h*.1} z" '
-                    f'fill="{fill}" {A}/>' + self._text(n.cx, n.cy - 4, n.lines))
+                    f'fill="{_attr(fill)}" {A}/>' + self._text(n.cx, n.cy - 4, n.lines))
         if 'circle' in shape:
             r = min(w, h) / 2
-            return f'<circle cx="{n.cx}" cy="{n.cy}" r="{r}" fill="{fill}" {A}/>' + label
+            return f'<circle cx="{n.cx}" cy="{n.cy}" r="{r}" fill="{_attr(fill)}" {A}/>' + label
         if 'title band' in shape:
-            return (f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{fill}" {A}/>'
+            return (f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{_attr(fill)}" {A}/>'
                     f'<line x1="{x}" y1="{y+16}" x2="{x+w}" y2="{y+16}" {A}/>'
                     + self._text(n.cx, n.cy + 8, n.lines))
         rx = 8 if 'rounded' in shape else 0
         icon = ''
         if n.type == 'firewall':
-            icon = (f'<g stroke="{st}" stroke-width="0.8">'
+            icon = (f'<g stroke="{_attr(st)}" stroke-width="0.8">'
                     + ''.join(f'<line x1="{x+6}" y1="{y+8+i*7}" x2="{x+w-6}" y2="{y+8+i*7}"/>' for i in range(2))
                     + '</g>')
         if 'icon=gears' in (n.meta or ''):
@@ -317,11 +423,11 @@ class SvgRenderer:
             # "predefined process / subroutine" flowchart shape — a plain
             # rectangle with a second vertical rule inset from each side.
             inset = min(12, w * 0.12)
-            icon += (f'<g stroke="{st}" stroke-width="1">'
+            icon += (f'<g stroke="{_attr(st)}" stroke-width="1">'
                      f'<line x1="{x+inset}" y1="{y}" x2="{x+inset}" y2="{y+h}"/>'
                      f'<line x1="{x+w-inset}" y1="{y}" x2="{x+w-inset}" y2="{y+h}"/>'
                      f'</g>')
-        return f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{rx}" fill="{fill}" {A}/>' + icon + label
+        return f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{rx}" fill="{_attr(fill)}" {A}/>' + icon + label
 
     def _gear(self, cx, cy, r=8, color='#2AA7A0'):
         teeth = 8
@@ -377,25 +483,27 @@ class SvgRenderer:
         # from, and the path between those points still has to dodge obstacles.
         if r is None or 'route:' in (e.hint or ''):
             return None
-        if not self._path_is_bad(pts, s, t):
-            r.commit(pts)
-            return None
-        # Route between stubs a short way out from each box face, not between the
-        # anchors themselves. Without this the search could arrive at, say, a
-        # left-hand face travelling upwards, leaving the arrowhead pointing along
-        # the box edge instead of into it.
-        a, b = pts[0], pts[-1]
-        sa, sb = _stub(a, s), _stub(b, t)
-        if sa is None or sb is None:
-            r.commit(pts)
-            return None
-        routed = r.route(sa, sb)
-        if not routed or len(routed) > 10:
-            r.commit(pts)
-            return None
-        full = _simplify_pts([a] + routed + [b])
-        r.commit(full)
-        return full
+        if self._path_is_bad(pts, s, t):
+            # Route between stubs a short way out from each box face, not
+            # between the anchors themselves. Without this the search could
+            # arrive at, say, a left-hand face travelling upwards, leaving
+            # the arrowhead pointing along the box edge instead of into it.
+            a, b = pts[0], pts[-1]
+            sa, sb = _stub(a, s), _stub(b, t)
+            routed = r.route(sa, sb) if sa is not None and sb is not None else None
+            if routed and len(routed) <= 10:
+                pts = _simplify_pts([a] + routed + [b])
+            # else: A* found nothing usable (or the stubs weren't valid) -
+            # fall through on the original anchor-point path rather than no
+            # route at all.
+        # Whichever path was chosen - the simple one, or A*'s - still worth
+        # checking for an elbow sitting right on the arrowhead (e.g. the "dip
+        # under an obstacle" shape _anchor_pts can produce on its own, with
+        # no A* routing involved). Commit whatever ends up actually drawn,
+        # lengthened or not, so later edges see it.
+        pts = _lengthen_final_approach(list(pts), r)
+        r.commit(pts)
+        return pts
 
     def _path_is_bad(self, pts, s, t):
         """True if this route crosses a box it shouldn't, or doubles up."""
@@ -487,7 +595,7 @@ class SvgRenderer:
         return ideal_y
 
     def _anchor_pts(self, s: Node, t: Node, hint: str, d=None, sp='', tp='', fan=None, twin=None,
-                    eid='', plan=True):
+                    conv=None, div=None, eid='', plan=True):
         if sp or tp:
             p1 = self._port_pt(s, sp, t)
             p2 = self._port_pt(t, tp, s)
@@ -527,7 +635,7 @@ class SvgRenderer:
                 # also spread the exit point across the hub's own width — otherwise
                 # every riser leaves from the exact same center point and only
                 # diverges after the jog, stacking near the source.
-                p1 = (s.x + (idx + 1) * s.w / (n + 1), p1[1])
+                p1 = (_away_from_corner(s.x + (idx + 1) * s.w / (n + 1), s.x, s.x + s.w), p1[1])
             else:
                 frac = 0.5
             if twin and twin[1] > 1:
@@ -535,7 +643,7 @@ class SvgRenderer:
                 # point across its width instead of every arrow piling into its
                 # exact center.
                 tidx, tn = twin
-                p2 = (t.x + (tidx + 1) * t.w / (tn + 1), p2[1])
+                p2 = (_away_from_corner(t.x + (tidx + 1) * t.w / (tn + 1), t.x, t.x + t.w), p2[1])
             my = p1[1] + frac * (p2[1] - p1[1])
             if d and plan:
                 # Global lane assignment: keep this jog clear of node boxes *and*
@@ -554,11 +662,28 @@ class SvgRenderer:
             shared_y = (lo + hi) / 2 if hi - lo >= 4 else None
             sy = shared_y if shared_y is not None else s.cy
             ty = shared_y if shared_y is not None else t.cy
+            spread = (div and div[1] > 1) or (conv and conv[1] > 1)
+            if div and div[1] > 1:
+                # SZ-12c: one source feeding several targets on its own side —
+                # each edge's own shared_y tends to land close to the others
+                # when the targets sit near each other, so spread the exit
+                # points across the source's face instead.
+                didx, dn = div
+                sy = _away_from_corner(s.y + (didx + 1) * s.h / (dn + 1), s.y, s.y + s.h)
+            if conv and conv[1] > 1:
+                # SZ-12c: several different sources converging on one target —
+                # the horizontal-branch counterpart of the vertical branch's
+                # `twin` spread above (twin only covers repeated edges on the
+                # exact same source/target pair, not distinct sources sharing
+                # a target). Without this every arrowhead lands near the same
+                # point on the target's face instead of fanning out.
+                cidx, cn = conv
+                ty = _away_from_corner(t.y + (cidx + 1) * t.h / (cn + 1), t.y, t.y + t.h)
             if dx > 0:
                 p1, p2 = (s.x + s.w, sy), (t.x, ty)
             else:
                 p1, p2 = (s.x, sy), (t.x + t.w, ty)
-            if abs(p1[1] - p2[1]) < 0.5:
+            if not spread and abs(p1[1] - p2[1]) < 0.5:
                 bot = d and self._blocked(d, p1[0], p2[0], p1[1])
                 if bot:
                     # Dip under whatever sits between the two boxes, but keep both
@@ -578,10 +703,21 @@ class SvgRenderer:
                     end = [(p2[0], yd)] if t_face else [(in_x, yd), (in_x, p2[1]), p2]
                     return start + end
                 return [p1, p2]
-            mx = (p1[0] + p2[0]) / 2
+            if spread:
+                # SZ-12c: without this, every one of these edges' jogs lands at
+                # the same (p1.x+p2.x)/2 — since they share a source (or a
+                # target) their p1.x (or p2.x) is identical, so the spread
+                # above only separated the end *points*; the risers in between
+                # still ran on top of each other for most of their length.
+                # Spreading the jog itself fans them into separate lanes too.
+                idx, n = div if (div and div[1] > 1) else conv
+                frac = _fan_frac(idx, n)
+            else:
+                frac = 0.5
+            mx = p1[0] + frac * (p2[0] - p1[0])
             return [p1, (mx, p1[1]), (mx, p2[1]), p2]
 
-    def _edge_geom(self, e: Edge, d: Diagram, par_idx=0, par_n=1, fan=None):
+    def _edge_geom(self, e: Edge, d: Diagram, par_idx=0, par_n=1, fan=None, conv=None, div=None):
         """Final drawn geometry for one edge, with no label placed yet.
 
         Labels are positioned in a second pass over the whole diagram, so the
@@ -594,7 +730,14 @@ class SvgRenderer:
         if 'route:arc-top' in e.hint:
             return None
         twin = (par_idx, par_n) if par_n > 1 else None
-        pts = self._anchor_pts(s, t, e.hint, d, e.sport, e.tport, fan=fan, twin=twin, eid=e.id)
+        # id(e), not e.id: e.id is author data (an Edges sheet row can leave
+        # it blank, or a pasted CSV can repeat one by mistake) — fine for the
+        # externally-visible data-edge-id attribute, but every internal
+        # per-edge tracking key in this renderer (lane planning here, geoms/
+        # _edge_segs below) needs one that's actually guaranteed unique for
+        # this render, which only the Python object identity is.
+        pts = self._anchor_pts(s, t, e.hint, d, e.sport, e.tport, fan=fan, twin=twin,
+                               conv=conv, div=div, eid=id(e))
         # SZ-12 old parallel offset: only needed when the newer fan/twin spread
         # above didn't already separate these edges (e.g. non-hub same-pair
         # edges elsewhere in the diagram); skip it here to avoid double-shifting.
@@ -623,10 +766,14 @@ class SvgRenderer:
                 pts = routed
         return l, pts
 
-    def _edge_svg(self, e: Edge, l, pts) -> str:
+    def _edge_svg(self, e: Edge, l, pts):
+        """Returns (svg_fragment, label_box). label_box is the rectangle the
+        caption ended up in (None if this edge has no label) — the caller
+        uses it to seed the router so edges routed afterward steer clear of
+        it (see SZ-12d / avoid_rect in routing.py)."""
         path = 'M' + ' L'.join(f'{px:.0f},{py:.0f}' for px, py in pts)
         dash = DASH.get(l.style)
-        attrs = f'stroke="{l.color}" stroke-width="{l.width}" fill="none"'
+        attrs = f'stroke="{_attr(l.color)}" stroke-width="{l.width}" fill="none"'
         if dash:
             attrs += f' stroke-dasharray="{dash}"'
         ms = self._marker(l.source_end, l.color)
@@ -636,6 +783,7 @@ class SvgRenderer:
         if mt:
             attrs += f' marker-end="url(#{mt})"'
         out = [f'<path d="{path}" {attrs}/>']
+        label_box = None
         if e.label:
             # A label on a vertical connector is turned to match it, so it takes a
             # narrow column instead of a wide bar straddling the line.
@@ -643,10 +791,10 @@ class SvgRenderer:
                 vertical, lines = False, [e.label]
                 lx, ly = self._place_label(pts[0][0] + 18, pts[0][1] + 14, len(e.label) * 6 + 8)
             else:
-                lx, ly, lines, vertical = self._place_edge_label(pts, e.label, e.id)
+                lx, ly, lines, vertical, label_box = self._place_edge_label(pts, e.label, id(e))
             out.append(self._text(lx, ly, lines, 10.5, 'normal', 'middle', '#555555',
                                   halo=True, rotate=-90 if vertical else 0, line_h=13))
-        return ''.join(out)
+        return ''.join(out), label_box
 
     def _edge_svg_arc(self, e: Edge, l, s: Node, t: Node) -> str:
         """Smooth arc over the top of both boxes. Reserved for waypoint_hint
@@ -661,7 +809,7 @@ class SvgRenderer:
         cx = (p1[0] + p2[0]) / 2
         path = f'M{p1[0]:.0f},{p1[1]:.0f} Q{cx:.0f},{top:.0f} {p2[0]:.0f},{p2[1]:.0f}'
         dash = DASH.get(l.style)
-        attrs = f'stroke="{l.color}" stroke-width="{l.width}" fill="none"'
+        attrs = f'stroke="{_attr(l.color)}" stroke-width="{l.width}" fill="none"'
         if dash:
             attrs += f' stroke-dasharray="{dash}"'
         ms = self._marker(l.source_end, l.color)
@@ -692,7 +840,9 @@ class SvgRenderer:
         block is a fraction of the width, which is what actually lets several
         captions share a crowded area instead of covering each other.
 
-        Returns (x, y, lines, vertical).
+        Returns (x, y, lines, vertical, box) — box is the final placed
+        rectangle, handed back so the caller can reserve it against edges
+        not yet routed (see SZ-12d).
         """
         seglen = [abs(b[0] - a[0]) + abs(b[1] - a[1]) for a, b in zip(pts, pts[1:])]
         total = sum(seglen) or 1.0
@@ -824,7 +974,7 @@ class SvgRenderer:
             best = (0.0, mx, my, vert, box_for(mx, my, vert))
         _, cx, cy, vert, box = best
         self.label_rects.append(box)
-        return cx, cy, lines, vert
+        return cx, cy, lines, vert, box
 
     def _place_label(self, lx, ly, w, h=16, pad=3, along="x", slide=None):
         """Nudge a label off its neighbours, without letting it leave its line.
@@ -919,6 +1069,52 @@ class SvgRenderer:
                     return (fgrp.index(e), len(fgrp))
             return None
 
+        # Horizontal-branch counterpart of fan/twin above: fan/twin only
+        # spread edges that share a source (fan) or the exact same source+
+        # target pair (twin), both gated on the *vertical* branch. A hub fed
+        # by several different single-edge sources side-on (e.g. three boxes
+        # to its left, each with one arrow in) hits neither, and nothing in
+        # the horizontal branch (`else:` below) spreads arrivals/departures
+        # at all — every such edge computes its own shared_y independently,
+        # which clusters arrowheads when those sources/targets sit close
+        # together instead of fanning them across the shared face.
+        # A near-zero |dy| means source and target sit almost side by side at
+        # the same height — a plain, direct "neighbour" link, not competing
+        # with anything for a lane. Folding one into a group over|t.cy-s.cy|
+        # was a mistake even at n=2: it jogs what should be a single long
+        # straight run into two short segments, which then starves that
+        # edge's own label of wrap width (narrow segments force many short
+        # wrapped lines, which is its own source of overlap) for no benefit —
+        # nothing was actually competing with it for a lane. Same |dy|>=10
+        # gate fan_groups above already uses, for the same reason.
+        conv_groups = {}   # target.id -> horizontal-branch edges arriving at it
+        div_groups = {}    # source.id -> horizontal-branch edges leaving it
+        for e in d.edges:
+            s, t = d.nodes.get(e.source), d.nodes.get(e.target)
+            if s and t and not _prefer_vertical(s, t) and abs(t.cy - s.cy) >= 10:
+                conv_groups.setdefault(e.target, []).append(e)
+                div_groups.setdefault(e.source, []).append(e)
+        for grp in conv_groups.values():
+            grp.sort(key=lambda e: d.nodes[e.source].cy)   # top source -> top arrival, no crossings
+        for grp in div_groups.values():
+            grp.sort(key=lambda e: d.nodes[e.target].cy)
+
+        def conv_of(e):
+            s, t = d.nodes.get(e.source), d.nodes.get(e.target)
+            if s and t and not _prefer_vertical(s, t) and abs(t.cy - s.cy) >= 10:
+                cgrp = conv_groups.get(e.target)
+                if cgrp and len(cgrp) > 1:
+                    return (cgrp.index(e), len(cgrp))
+            return None
+
+        def div_of(e):
+            s, t = d.nodes.get(e.source), d.nodes.get(e.target)
+            if s and t and not _prefer_vertical(s, t) and abs(t.cy - s.cy) >= 10:
+                dgrp = div_groups.get(e.source)
+                if dgrp and len(dgrp) > 1:
+                    return (dgrp.index(e), len(dgrp))
+            return None
+
         # Dry pass: work out where every edge starts and ends so the router's
         # grid can include those points once, instead of being rebuilt (and
         # re-masked) for each edge in turn.
@@ -931,7 +1127,8 @@ class SvgRenderer:
             grp = pairs[frozenset((e.source, e.target))]
             twin = (grp.index(e), len(grp)) if len(grp) > 1 else None
             pts = self._anchor_pts(s, t, e.hint, d, e.sport, e.tport,
-                                   fan=fan_of(e), twin=twin, eid=e.id, plan=False)
+                                   fan=fan_of(e), twin=twin, conv=conv_of(e), div=div_of(e),
+                                   eid=id(e), plan=False)
             terminals.append(pts[0])
             terminals.append(pts[-1])
             # the stubs the router actually searches between must be on the grid too
@@ -944,30 +1141,81 @@ class SvgRenderer:
         # there the simple routes stand on their own rather than stalling.
         self._router = router if router.usable() else None
 
-        # Phase 1 — settle every edge's geometry. Captions are placed only once
-        # all of it is known, so a label can be steered off lines that had not
-        # been drawn yet when its own edge was rendered.
+        # SZ-12d: settle geometry AND place each caption one edge at a time,
+        # in order of how constrained the edge is (shortest source-target
+        # span first), instead of routing every edge first and only then
+        # placing labels against the finished picture. That older order
+        # meant a short, tight hop (e.g. two directly-connected shapes
+        # sitting close together — nowhere to put its label but right where
+        # it is) had already lost the chance to protect its spot by the
+        # time any label was placed, so whichever longer edge got routed
+        # through that same corridor drew straight over it. Settling a tight
+        # edge's own geometry and caption first, then immediately reserving
+        # that caption's footprint in the router (avoid_rect) before the
+        # next edge is even routed, lets every edge after it steer clear
+        # instead of silently overshadowing it. A label can still only see
+        # — and avoid — lines/captions already settled when its own turn
+        # comes, same trade every ranking-based pass makes.
+        #
+        # Keyed by id(e), not e.id: see the comment in _edge_geom. A plain
+        # e.id key here previously meant every edge whose author data left
+        # edge_id blank (or a pasted CSV repeated one) collapsed onto the
+        # same dict entry — each overwriting the last, so EVERY such edge in
+        # the diagram silently rendered as a copy of whichever one happened
+        # to be computed last, instead of its own geometry.
+        def _tightness(e):
+            s, t = d.nodes.get(e.source), d.nodes.get(e.target)
+            return abs(s.cx - t.cx) + abs(s.cy - t.cy) if s and t else 0.0
+        processing_order = sorted(d.edges, key=_tightness)
+
         geoms = {}
-        for e in d.edges:
-            grp = pairs[frozenset((e.source, e.target))]
-            geoms[e.id] = self._edge_geom(e, d, grp.index(e), len(grp), fan=fan_of(e))
+        inners = {}
+        label_boxes = {}
         self._edge_segs = []
-        for eid, g in geoms.items():
-            if not g:
+        for e in processing_order:
+            grp = pairs[frozenset((e.source, e.target))]
+            g = self._edge_geom(e, d, grp.index(e), len(grp), fan=fan_of(e),
+                                conv=conv_of(e), div=div_of(e))
+            geoms[id(e)] = g
+            if g is None:
+                inners[id(e)] = self._edge_svg_arc(e, self.spec.line_of(e),
+                                                    d.nodes[e.source], d.nodes[e.target])
                 continue
             for (p, q) in zip(g[1], g[1][1:]):
-                self._edge_segs.append((eid, min(p[0], q[0]) - 1, min(p[1], q[1]) - 1,
+                self._edge_segs.append((id(e), min(p[0], q[0]) - 1, min(p[1], q[1]) - 1,
                                         max(p[0], q[0]) + 1, max(p[1], q[1]) + 1))
-        # Phase 2 — draw, placing each caption against the finished picture.
+            inner, label_box = self._edge_svg(e, g[0], g[1])
+            inners[id(e)] = inner
+            if label_box:
+                label_boxes[id(e)] = label_box
+                if self._router is not None:
+                    self._router.avoid_rect(*label_box)
+
+        # SZ-12d lever 1 (reroute) has now had every chance it's going to
+        # get — whatever's still sitting under another line at this point
+        # genuinely has nowhere clear to go by routing alone. Surfaced for
+        # the caller (layout.py's content-aware spacing pass) to try lever
+        # 2: widen the gap between the two shapes a short, direct edge like
+        # this connects, so there's actually room next render.
+        self.overshadowed_edges = []
         for e in d.edges:
-            g = geoms[e.id]
-            if g is None:
-                inner = self._edge_svg_arc(e, self.spec.line_of(e),
-                                           d.nodes[e.source], d.nodes[e.target])
-            else:
-                inner = self._edge_svg(e, g[0], g[1])
+            box = label_boxes.get(id(e))
+            if box is None:
+                continue
+            crossed = any(
+                other_id != id(e) and box[0] < sx2 and box[2] > sx1 and box[1] < sy2 and box[3] > sy1
+                for other_id, sx1, sy1, sx2, sy2 in self._edge_segs
+            )
+            if crossed:
+                self.overshadowed_edges.append(e)
+
+        # Draw in the diagram's own edge order — processing order above is
+        # purely an internal scheduling detail and shouldn't reorder the
+        # output (DOM order affects paint order and the frontend's click
+        # targets).
+        for e in d.edges:
             body.append(f'<g data-edge-id="{escape(e.id)}" data-source="{escape(e.source)}" '
-                        f'data-target="{escape(e.target)}">' + inner + '</g>')
+                        f'data-target="{escape(e.target)}">' + inners[id(e)] + '</g>')
         for _, n in leaves:
             body.append(f'<g data-node-id="{escape(n.id)}">' + self._node_svg(n) + '</g>')
         title = (f'<text x="{SZ.MARGIN}" y="{SZ.MARGIN - 8}" font-family="{FONT}" font-size="16" '

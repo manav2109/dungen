@@ -183,6 +183,39 @@ class Router:
             k = self._seg_key(axis, line, hi)
             self.used[k] = self.used.get(k, 0) + 1
 
+    def avoid_rect(self, x1, y1, x2, y2, weight=3):
+        """Bias the search away from a rectangle that isn't a route — a
+        placed label's own footprint, most often, when a different edge
+        needs to be re-routed clear of it. Same congestion bucket mechanism
+        `commit()` uses for a finished path, just seeded from an area: every
+        grid line passing through the rectangle gets its overlapping stretch
+        marked used. `weight` > 1 (vs. the 1 `commit()` adds per route) so a
+        label is a stronger deterrent than one more shared route corridor —
+        still a cost, not a hard wall, so a diagram with no real alternative
+        degrades to routing through it rather than failing to route at all.
+        """
+        xs, ys = self._lines()
+        lo_x, hi_x = (x1, x2) if x1 <= x2 else (x2, x1)
+        lo_y, hi_y = (y1, y2) if y1 <= y2 else (y2, y1)
+        for x in xs:
+            if lo_x <= x <= hi_x:
+                p = lo_y
+                while p < hi_y:
+                    k = self._seg_key("v", x, p)
+                    self.used[k] = self.used.get(k, 0) + weight
+                    p += POS_BUCKET
+                k = self._seg_key("v", x, hi_y)
+                self.used[k] = self.used.get(k, 0) + weight
+        for y in ys:
+            if lo_y <= y <= hi_y:
+                p = lo_x
+                while p < hi_x:
+                    k = self._seg_key("h", y, p)
+                    self.used[k] = self.used.get(k, 0) + weight
+                    p += POS_BUCKET
+                k = self._seg_key("h", y, hi_x)
+                self.used[k] = self.used.get(k, 0) + weight
+
     # ---------- search ----------
     def route(self, p1, p2, max_expand=9000):
         """A* an orthogonal path from p1 to p2, or None if it can't find one."""
