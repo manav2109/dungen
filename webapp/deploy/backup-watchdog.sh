@@ -3,7 +3,9 @@
 # diagrams) to a timestamped backup, prunes anything older than
 # RETAIN_DAYS. Runs forever, sleeping between backups.
 set -u
-export PATH="/usr/bin:/mingw64/bin:/c/Windows/System32:$PATH"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) export PATH="/usr/bin:/mingw64/bin:/c/Windows/System32:$PATH" ;;
+esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DB_PATH="$SCRIPT_DIR/../backend/data/projects.db"
 BACKUP_DIR="$SCRIPT_DIR/../backend/data/backups"

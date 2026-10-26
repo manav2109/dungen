@@ -2,16 +2,24 @@
 # Runs the FastAPI backend (uvicorn, single worker — required, see README)
 # and restarts it if it ever exits.
 set -u
-export PATH="/usr/bin:/mingw64/bin:/c/Windows/System32:$PATH"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$SCRIPT_DIR/../backend"
-VENV_PY="$BACKEND_DIR/.venv/Scripts/python.exe"
 LOG_DIR="$SCRIPT_DIR/logs"
 LOG_FILE="$LOG_DIR/backend.log"
 mkdir -p "$LOG_DIR"
 
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    export PATH="/usr/bin:/mingw64/bin:/c/Windows/System32:$PATH"
+    VENV_PY="$BACKEND_DIR/.venv/Scripts/python.exe"
+    ;;
+  *)
+    VENV_PY="$BACKEND_DIR/.venv/bin/python"
+    ;;
+esac
+
 if [ ! -f "$VENV_PY" ]; then
-  echo "[watchdog] $(date) - venv not found at $VENV_PY. Run the one-time setup in README.md first." >> "$LOG_FILE"
+  echo "[watchdog] $(date) - venv not found at $VENV_PY. Run setup.sh first." >> "$LOG_FILE"
   exit 1
 fi
 

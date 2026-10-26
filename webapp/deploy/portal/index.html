@@ -84,6 +84,8 @@
     const card = document.createElement("a");
     card.className = "card";
     card.href = svc.url;
+    card.target = "_blank";
+    card.rel = "noopener noreferrer";
     card.innerHTML = `
       <div class="card-top">
         <span class="card-name">${svc.name}</span>

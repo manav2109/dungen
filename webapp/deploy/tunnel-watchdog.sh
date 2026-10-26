@@ -5,15 +5,23 @@
 #
 # Public URL is fixed: https://dev-ai.site
 set -u
-export PATH="/usr/bin:/mingw64/bin:/c/Windows/System32:$PATH"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$SCRIPT_DIR/logs"
 LOG_FILE="$LOG_DIR/tunnel.log"
-CF_EXE="$SCRIPT_DIR/bin/cloudflared.exe"
 mkdir -p "$LOG_DIR"
 
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    export PATH="/usr/bin:/mingw64/bin:/c/Windows/System32:$PATH"
+    CF_EXE="$SCRIPT_DIR/bin/cloudflared.exe"
+    ;;
+  *)
+    CF_EXE="$SCRIPT_DIR/bin/cloudflared"
+    ;;
+esac
+
 if [ ! -f "$CF_EXE" ]; then
-  echo "[watchdog] $(date) - cloudflared.exe not found at $CF_EXE. Run the one-time setup in README.md first." >> "$LOG_FILE"
+  echo "[watchdog] $(date) - cloudflared not found at $CF_EXE. Run setup.sh first." >> "$LOG_FILE"
   exit 1
 fi
 

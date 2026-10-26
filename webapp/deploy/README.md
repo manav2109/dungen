@@ -30,6 +30,27 @@ Cloudflare's anonymous Quick Tunnel. Trade-off: the public URL is random
 tunnel restarts**. Fine to get live today; see "Upgrade to a named tunnel"
 at the bottom if you later want a stable custom domain.
 
+## One-click setup / redeploy
+
+```bash
+cd webapp/deploy
+bash setup.sh
+```
+
+Works on Linux, macOS, and Windows (via Git Bash) — detects the OS and
+picks the right package manager (`winget`/`brew`/`apt`/`dnf`/`pacman`) and
+binary downloads for each. Installs any missing tools (Python, Node),
+creates the venv, builds the frontend, downloads Caddy/cloudflared, checks
+Cloudflare tunnel auth, and (re)starts all 4 services — safe to re-run any
+time, on this machine or a new one. `bash setup.sh --register` also sets
+services to auto-start at login/boot (Task Scheduler / launchd / crontab
+depending on OS). Moving to a different machine needs either a copy of
+`~/.cloudflared/` from this one, or `bash setup.sh --new-tunnel` to create
+a fresh tunnel. Full details in the script's own header comment.
+
+The manual steps below are what that script automates — kept for
+reference/troubleshooting.
+
 ## One-time setup
 
 (If you've already run these — venv, frontend build, Caddy/cloudflared
