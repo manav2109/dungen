@@ -1,14 +1,12 @@
 """Storage backend selection.
 
-- Home-hosted deploy (`webapp/deploy/`): SQLite, a single file on local
-  disk — that machine's disk is durable and there's exactly one process.
-- GCP Cloud Run deploy (`webapp/deploy-gcp/`): Cloud Run's own disk is
-  ephemeral and per-instance (wiped on restart/redeploy, not shared across
-  autoscaled instances), so state has to live off-box — Postgres, reached
-  via `DATABASE_URL` (e.g. a free-tier Neon database — see
-  `webapp/deploy-gcp/README.md`, chosen there specifically to keep monthly
-  cost near $0; Cloud SQL is meaningfully more expensive for the same job
-  at this app's scale).
+SQLite is the default and only backend this deploy (`webapp/deploy/`)
+actually uses — a single file on local disk, durable, exactly one
+process. Postgres is also supported, triggered by setting `DATABASE_URL`:
+kept as an optional escape hatch (see `webapp/deploy/backend.Dockerfile`'s
+own comment — it installs psycopg2's runtime dependency "in case
+DATABASE_URL is ever set") rather than because anything here currently
+points at one.
 
 Picked automatically from environment; nothing else in the app needs to
 branch on which one is active. Callers write SQL with `?` placeholders
@@ -16,10 +14,10 @@ branch on which one is active. Callers write SQL with `?` placeholders
 Postgres — and get a context manager that commits/rolls back/closes on
 `with db.connect() as conn:` either way.
 
-`INSTANCE_CONNECTION_NAME` is also supported (Cloud SQL over its Unix
-socket at `/cloudsql/<name>`, no Auth Proxy sidecar needed) if you ever
-outgrow Neon's free tier and move to Cloud SQL instead — same code path,
-just a different env var / connection method.
+`INSTANCE_CONNECTION_NAME` (Cloud SQL's Unix-socket connection method) is
+also still wired up below, but it's GCP-specific and nothing in this repo
+targets GCP anymore — this branch is effectively dead code now, kept only
+because removing it is a real decision, not a comment fix.
 """
 from __future__ import annotations
 import os

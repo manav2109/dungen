@@ -10,12 +10,14 @@ token is only ever read by this same backend).
 Shares the same DB as `projects.py` (one `users` table alongside
 `projects`) — see `app/db.py` for which storage backend that resolves to.
 
-Signing secret: on Cloud Run, `AUTH_SECRET_KEY` (env var, e.g. from Secret
-Manager) MUST be set — Cloud Run's local disk is ephemeral and not shared
-across instances, so a file-based secret would differ per instance and
-every other instance would reject tokens it didn't sign. The home deploy
-(one process, durable disk) keeps the file-based secret for simplicity —
-no secret-management step needed to get it running.
+Signing secret: if this ever runs against Postgres, `AUTH_SECRET_KEY` (env
+var) MUST be set explicitly — Postgres is the signal that state lives off
+this one box, which is also exactly the scenario where a second process
+or instance could exist, and a file-based secret would differ per
+instance, with every other instance rejecting tokens it didn't sign. The
+home deploy (one process, durable disk, SQLite) keeps the file-based
+secret for simplicity — no secret-management step needed to get it
+running.
 """
 from __future__ import annotations
 import base64
@@ -63,8 +65,9 @@ def _get_secret() -> bytes:
         return bytes.fromhex(env_secret) if _looks_like_hex(env_secret) else env_secret.encode("utf-8")
     if db.BACKEND == "postgres":
         raise RuntimeError(
-            "AUTH_SECRET_KEY env var is required when running against Postgres/Cloud Run "
-            "(local disk isn't shared across instances or restarts) — see webapp/deploy-gcp/README.md"
+            "AUTH_SECRET_KEY env var is required when running against Postgres "
+            "(local disk isn't shared across instances or restarts) — see "
+            "webapp/deploy/.env.example"
         )
     SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not SECRET_PATH.exists():

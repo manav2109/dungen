@@ -57,12 +57,13 @@ def _seed_password() -> str:
         return env_password
     if db.BACKEND == "postgres":
         # These usernames are public (committed to this file, in a public repo),
-        # so on a Cloud Run deploy reachable from the internet there's no safe
-        # default to fall back to — same reasoning as AUTH_SECRET_KEY in auth.py.
+        # so if this is ever run against Postgres on a deployment reachable
+        # from the internet, there's no safe default to fall back to — same
+        # reasoning as AUTH_SECRET_KEY in auth.py.
         raise RuntimeError(
             f"{SEED_USER_PASSWORD_ENV} env var is required when running against "
-            "Postgres/Cloud Run — the SEED_USERS usernames are public, so the "
-            "seeded accounts must not fall back to a guessable default on a "
+            "Postgres — the SEED_USERS usernames are public, so the seeded "
+            "accounts must not fall back to a guessable default on a "
             "deployment reachable from the internet. Set SEED_USERS=0 instead "
             "if you don't want these accounts at all."
         )
