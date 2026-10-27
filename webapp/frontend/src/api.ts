@@ -176,6 +176,10 @@ export async function me(): Promise<{ username: string }> {
   return r.data;
 }
 
+export async function logout(): Promise<void> {
+  await client.post("/auth/logout");
+}
+
 // ---------- load / bootstrap ----------
 export interface SampleInfo {
   name: string;

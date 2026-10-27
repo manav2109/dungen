@@ -17,6 +17,7 @@ import {
   listProjects,
   loadProject,
   loadSample,
+  logout,
   me,
   onUnauthorized,
   redo,
@@ -825,6 +826,11 @@ export default function App() {
   }, []);
 
   const onLogout = useCallback(() => {
+    // Fire-and-forget: local logout must succeed even if this fails (dead
+    // network, already-expired token) — the point is leaving no stale
+    // session on the server, not blocking the user from getting back to
+    // the login screen.
+    logout().catch(() => {});
     setToken(null);
     setUser(null);
   }, []);
