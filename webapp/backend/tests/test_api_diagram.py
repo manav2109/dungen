@@ -31,6 +31,32 @@ def _gap(a, b):
     return max(hgap, vgap)
 
 
+def test_get_diagram_returns_current_state_without_relayout(client, auth_headers):
+    """GET /api/diagram/{session_id} must return exactly what's there — it's
+    what restores the canvas after a page reload — not run a fresh layout
+    pass that would discard a manually dragged position."""
+    headers = auth_headers
+    session_id = _blank_session(client, headers)
+    a = _create_node(client, headers, session_id, 100, 100, 'A')
+    r = client.post(
+        '/api/reposition',
+        json={'session_id': session_id, 'node_id': a['id'], 'x': 777, 'y': 888},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.get(f'/api/diagram/{session_id}', headers=headers)
+    assert r.status_code == 200, r.text
+    node = next(n for n in r.json()['nodes'] if n['id'] == a['id'])
+    assert node['x'] == 777
+    assert node['y'] == 888
+
+
+def test_get_diagram_404s_for_unknown_session(client, auth_headers):
+    r = client.get('/api/diagram/not-a-real-session', headers=auth_headers)
+    assert r.status_code == 404
+
+
 def test_reposition_near_connected_node_keeps_minimum_gap(client, auth_headers):
     headers = auth_headers
     session_id = _blank_session(client, headers)
