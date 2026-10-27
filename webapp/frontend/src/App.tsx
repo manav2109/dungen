@@ -16,6 +16,8 @@ import {
   getToken,
   listProjects,
   loadProject,
+  getCurrentDiagram,
+  getResumeSessionId,
   loadSample,
   logout,
   me,
@@ -24,6 +26,7 @@ import {
   reparentNode,
   reposition as apiReposition,
   saveProject,
+  setResumeSessionId,
   setStyleRules,
   setToken,
   switchDiagram,
@@ -183,6 +186,11 @@ function isTypingTarget(el: EventTarget | null): boolean {
 }
 
 function DiagramApp({ username, onLogout }: { username: string; onLogout: () => void }) {
+  // True immediately when there's nothing to resume; false until the resume
+  // fetch below settles otherwise — kept blank meanwhile (see the early
+  // return past the hooks) so a page reload with a diagram open doesn't
+  // flash the picker before snapping to the restored canvas.
+  const [resumeChecked, setResumeChecked] = useState(() => !getResumeSessionId());
   const [diagram, setDiagram] = useState<DiagramResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -230,6 +238,23 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
     }
   };
 
+  // Resume-after-reload: if a prior load (runLoad, below) left a session_id
+  // in sessionStorage, re-fetch its current state once on mount instead of
+  // falling through to the picker. A 404 (server restarted / session TTL'd
+  // out) just clears the stale id and lands on today's picker — silent, no
+  // error banner, since this isn't something the user did wrong.
+  useEffect(() => {
+    const sessionId = getResumeSessionId();
+    if (!sessionId) return;
+    getCurrentDiagram(sessionId)
+      .then((d) => {
+        setDiagram(d);
+        setDirty(false);
+      })
+      .catch(() => setResumeSessionId(null))
+      .finally(() => setResumeChecked(true));
+  }, []);
+
   const refreshProjects = useCallback(() => {
     listProjects().then(setProjects).catch(() => {});
   }, []);
@@ -254,6 +279,7 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
     p.then((d) => {
       setDiagram(d);
       setDirty(false); // freshly loaded == exactly what the server has
+      setResumeSessionId(d.session_id);
       after?.(d);
     })
       .catch(handleErr)
@@ -651,6 +677,7 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
+  if (!resumeChecked) return null;
   return (
     <div className="app">
       {saveDialogOpen && (
@@ -845,6 +872,7 @@ export default function App() {
     // the login screen.
     logout().catch(() => {});
     setToken(null);
+    setResumeSessionId(null);
     setUser(null);
   }, []);
 

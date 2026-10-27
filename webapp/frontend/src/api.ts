@@ -135,6 +135,30 @@ export function setToken(token: string | null) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+// ---------- resume-on-reload ----------
+// sessionStorage, not localStorage: a reload of this tab should resume
+// where it left off, but a fresh tab should still open the picker. Guarded
+// the same way usePersistentState.ts is — storage can throw in some privacy
+// modes, and resume is a nice-to-have, never worth breaking the app for.
+const RESUME_SESSION_KEY = "drawgen_session_id";
+
+export function getResumeSessionId(): string | null {
+  try {
+    return sessionStorage.getItem(RESUME_SESSION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setResumeSessionId(sessionId: string | null) {
+  try {
+    if (sessionId) sessionStorage.setItem(RESUME_SESSION_KEY, sessionId);
+    else sessionStorage.removeItem(RESUME_SESSION_KEY);
+  } catch {
+    /* storage disabled/private mode — resume just won't work, not fatal */
+  }
+}
+
 client.interceptors.request.use((config) => {
   const token = getToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -258,6 +282,11 @@ export async function createBlank(title?: string): Promise<DiagramResponse> {
 // ---------- multi-diagram ----------
 export async function listDiagrams(sessionId: string): Promise<DiagramInfo[]> {
   const r = await client.get<DiagramInfo[]>(`/diagram/${sessionId}/list`);
+  return r.data;
+}
+
+export async function getCurrentDiagram(sessionId: string): Promise<DiagramResponse> {
+  const r = await client.get<DiagramResponse>(`/diagram/${sessionId}`);
   return r.data;
 }
 
