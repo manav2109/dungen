@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from . import auth as auth_store
 from . import db
@@ -91,13 +92,12 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(title="DrawGen API", lifespan=_lifespan)
 
-# `FRONTEND_ORIGIN` (comma-separated) restricts CORS to real cross-origin
-# deployments — e.g. GCP Cloud Run, where frontend and backend are two
-# separate services on two separate URLs (see webapp/deploy-gcp/). Unset
-# (the default, and what webapp/deploy/ uses) falls back to wide-open,
-# which is low-risk there specifically because the browser only ever talks
-# to Caddy same-origin — Caddy forwards to this backend server-side, so no
-# real cross-origin browser request ever happens.
+# `FRONTEND_ORIGIN` (comma-separated) restricts CORS to a real cross-origin
+# deployment, if this is ever run as two separate services on two separate
+# URLs. Unset (the default, and what webapp/deploy/ uses) falls back to
+# wide-open, which is low-risk there specifically because the browser only
+# ever talks to Caddy same-origin — Caddy forwards to this backend
+# server-side, so no real cross-origin browser request ever happens.
 _frontend_origins = [o.strip() for o in os.environ.get("FRONTEND_ORIGIN", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
@@ -141,7 +141,12 @@ async def auth_middleware(request: Request, call_next):
     if request.url.path.startswith("/api/") and request.url.path not in PUBLIC_API_PATHS:
         header = request.headers.get("authorization", "")
         token = header[7:] if header.lower().startswith("bearer ") else None
-        payload = auth_store.verify_token(token) if token else None
+        # verify_token does a DB read (app/auth.py's get_user_by_id, for the
+        # token_version revocation check) — it's a plain sync call, so run it
+        # off the event loop. Left un-threaded, every authenticated request
+        # would block ALL request processing (not just this one) for the
+        # duration of that DB call, serializing the whole process behind it.
+        payload = await run_in_threadpool(auth_store.verify_token, token) if token else None
         if payload is None:
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
         request.state.user_id = payload["user_id"]
