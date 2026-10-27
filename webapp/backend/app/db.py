@@ -13,21 +13,15 @@ branch on which one is active. Callers write SQL with `?` placeholders
 (sqlite3's style) — translated to `%s` automatically when running against
 Postgres — and get a context manager that commits/rolls back/closes on
 `with db.connect() as conn:` either way.
-
-`INSTANCE_CONNECTION_NAME` (Cloud SQL's Unix-socket connection method) is
-also still wired up below, but it's GCP-specific and nothing in this repo
-targets GCP anymore — this branch is effectively dead code now, kept only
-because removing it is a real decision, not a comment fix.
 """
 from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
 
-INSTANCE_CONNECTION_NAME = os.environ.get("INSTANCE_CONNECTION_NAME")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-BACKEND = "postgres" if (INSTANCE_CONNECTION_NAME or DATABASE_URL) else "sqlite"
+BACKEND = "postgres" if DATABASE_URL else "sqlite"
 
 SQLITE_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "projects.db"
 
@@ -35,13 +29,6 @@ SQLITE_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "projects.db"
 def _pg_connect():
     import psycopg2
 
-    if INSTANCE_CONNECTION_NAME:
-        return psycopg2.connect(
-            host=f"/cloudsql/{INSTANCE_CONNECTION_NAME}",
-            dbname=os.environ.get("DB_NAME", "diagen"),
-            user=os.environ.get("DB_USER", "diagen"),
-            password=os.environ["DB_PASS"],
-        )
     return psycopg2.connect(DATABASE_URL)
 
 
@@ -49,9 +36,8 @@ class _PgConnWrapper:
     """Enough of sqlite3.Connection's surface for this app: `?` -> `%s`
     translation, and `with connect() as conn:` that commits-or-rolls-back
     AND closes (sqlite3's own __exit__ only handles the transaction, not
-    closing — we want the closing behavior on Postgres, since a Cloud Run
-    instance living for hours would otherwise leak one TCP connection per
-    call)."""
+    closing — we want the closing behavior on Postgres, since a long-lived
+    process would otherwise leak one TCP connection per call)."""
 
     def __init__(self, raw):
         self._raw = raw
