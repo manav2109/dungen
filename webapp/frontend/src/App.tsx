@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { ConfigProvider, theme as antdTheme } from "antd";
 import type { DiagramResponse, ProjectInfo } from "./api";
 import {
@@ -36,19 +36,24 @@ import DiagramCanvas from "./components/DiagramCanvas";
 import Toolbar, { type Tool } from "./components/Toolbar";
 import Palette from "./components/Palette";
 import PropertiesPanel from "./components/PropertiesPanel";
-import CsvPanel from "./components/CsvPanel";
-import TemplatesPanel from "./components/TemplatesPanel";
-import OutlinePanel from "./components/OutlinePanel";
-import StyleRulesPanel from "./components/StyleRulesPanel";
-import ProjectsPanel from "./components/ProjectsPanel";
-import VoicePanel from "./components/VoicePanel";
 import LoginScreen from "./components/LoginScreen";
 import EmptyState from "./components/EmptyState";
 import Sidebar, { SIDEBAR_DEFAULT } from "./components/Sidebar";
-import SaveDialog from "./components/SaveDialog";
-import ExportPanel from "./components/ExportPanel";
 import { usePersistentState } from "./usePersistentState";
 import "./styles.css";
+
+// Each of these is reached from a tab or a menu action, never needed for
+// first paint — split into their own chunks instead of shipping all of them
+// (and whatever they pull in) in the initial bundle regardless of whether a
+// session ever opens them. See vite build's chunk-size-limit warning.
+const CsvPanel = lazy(() => import("./components/CsvPanel"));
+const TemplatesPanel = lazy(() => import("./components/TemplatesPanel"));
+const OutlinePanel = lazy(() => import("./components/OutlinePanel"));
+const StyleRulesPanel = lazy(() => import("./components/StyleRulesPanel"));
+const ProjectsPanel = lazy(() => import("./components/ProjectsPanel"));
+const VoicePanel = lazy(() => import("./components/VoicePanel"));
+const SaveDialog = lazy(() => import("./components/SaveDialog"));
+const ExportPanel = lazy(() => import("./components/ExportPanel"));
 
 type SidebarTab =
   | "properties"
@@ -648,15 +653,21 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
 
   return (
     <div className="app">
-      {saveDialogOpen && <SaveDialog initialName={diagram?.title || "Untitled"} onSave={onSaveProject} onClose={() => setSaveDialogOpen(false)} />}
+      {saveDialogOpen && (
+        <Suspense fallback={null}>
+          <SaveDialog initialName={diagram?.title || "Untitled"} onSave={onSaveProject} onClose={() => setSaveDialogOpen(false)} />
+        </Suspense>
+      )}
       {exportPanelOpen && diagram && (
-        <ExportPanel
-          diagram={diagram}
-          projectName={currentProjectName}
-          onDownloadSimple={onDownload}
-          onClose={() => setExportPanelOpen(false)}
-          onSettingsSaved={(settings) => setDiagram((d) => (d ? { ...d, export_settings: settings } : d))}
-        />
+        <Suspense fallback={null}>
+          <ExportPanel
+            diagram={diagram}
+            projectName={currentProjectName}
+            onDownloadSimple={onDownload}
+            onClose={() => setExportPanelOpen(false)}
+            onSettingsSaved={(settings) => setDiagram((d) => (d ? { ...d, export_settings: settings } : d))}
+          />
+        </Suspense>
       )}
       <Toolbar
         hasDiagram={!!diagram}
@@ -757,34 +768,36 @@ function DiagramApp({ username, onLogout }: { username: string; onLogout: () => 
               />
             )}
             {tab === "palette" && <Palette shapes={diagram.shapes} onCreate={onCreateFromPalette} />}
-            {tab === "csv" && (
-              <CsvPanel
-                unknownTypes={diagram.unknown_types}
-                shapes={diagram.shapes}
-                lines={diagram.lines}
-                onApply={onApplyCsv}
-              />
-            )}
-            {tab === "templates" && <TemplatesPanel onGenerate={onGenerateTemplate} />}
-            {tab === "outline" && (
-              <OutlinePanel shapes={diagram.shapes} lines={diagram.lines} onGenerate={onGenerateOutline} />
-            )}
-            {tab === "voice" && (
-              <VoicePanel shapes={diagram.shapes} lines={diagram.lines} onGenerate={onGenerateOutline} />
-            )}
-            {tab === "style" && <StyleRulesPanel rulesText={diagram.style_rules} onApply={onApplyStyleRules} />}
-            {tab === "projects" && (
-              <ProjectsPanel
-                projects={projects}
-                currentProjectId={currentProjectId}
-                currentName={currentProjectName || diagram.title}
-                busy={busy}
-                onSave={onSaveProject}
-                onSaveAsCopy={onSaveProjectAsCopy}
-                onLoad={onLoadProject}
-                onDelete={onDeleteProject}
-              />
-            )}
+            <Suspense fallback={null}>
+              {tab === "csv" && (
+                <CsvPanel
+                  unknownTypes={diagram.unknown_types}
+                  shapes={diagram.shapes}
+                  lines={diagram.lines}
+                  onApply={onApplyCsv}
+                />
+              )}
+              {tab === "templates" && <TemplatesPanel onGenerate={onGenerateTemplate} />}
+              {tab === "outline" && (
+                <OutlinePanel shapes={diagram.shapes} lines={diagram.lines} onGenerate={onGenerateOutline} />
+              )}
+              {tab === "voice" && (
+                <VoicePanel shapes={diagram.shapes} lines={diagram.lines} onGenerate={onGenerateOutline} />
+              )}
+              {tab === "style" && <StyleRulesPanel rulesText={diagram.style_rules} onApply={onApplyStyleRules} />}
+              {tab === "projects" && (
+                <ProjectsPanel
+                  projects={projects}
+                  currentProjectId={currentProjectId}
+                  currentName={currentProjectName || diagram.title}
+                  busy={busy}
+                  onSave={onSaveProject}
+                  onSaveAsCopy={onSaveProjectAsCopy}
+                  onLoad={onLoadProject}
+                  onDelete={onDeleteProject}
+                />
+              )}
+            </Suspense>
           </Sidebar>
         )}
       </div>

@@ -1,9 +1,14 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useId, useRef, useState } from "react";
 import { Button, Card, Col, Row, Typography } from "antd";
 import type { LineOut, ProjectInfo, SampleInfo, ShapeOut } from "../api";
 import { downloadSample, getPalette, listSamples, sampleLabel, sampleMeta } from "../api";
-import TemplatesPanel from "./TemplatesPanel";
-import OutlinePanel from "./OutlinePanel";
+
+// Same split as App.tsx's lazy panels — EmptyState is the first screen after
+// login, so a static import here would pull both back into the eager bundle
+// and silence the split App.tsx already does for these two (Rollup can't
+// chunk-split a module that's also statically imported anywhere else).
+const TemplatesPanel = lazy(() => import("./TemplatesPanel"));
+const OutlinePanel = lazy(() => import("./OutlinePanel"));
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -113,10 +118,18 @@ export default function EmptyState({
         </Button>
 
         <div id={`${sectionId}-template`} className="empty-expanded" hidden={expanded !== "template"}>
-          {expanded === "template" && <TemplatesPanel onGenerate={onGenerateTemplate} />}
+          {expanded === "template" && (
+            <Suspense fallback={null}>
+              <TemplatesPanel onGenerate={onGenerateTemplate} />
+            </Suspense>
+          )}
         </div>
         <div id={`${sectionId}-outline`} className="empty-expanded" hidden={expanded !== "outline"}>
-          {expanded === "outline" && <OutlinePanel shapes={shapes} lines={lines} onGenerate={onGenerateOutline} />}
+          {expanded === "outline" && (
+            <Suspense fallback={null}>
+              <OutlinePanel shapes={shapes} lines={lines} onGenerate={onGenerateOutline} />
+            </Suspense>
+          )}
         </div>
 
         {recentProjects.length > 0 && (
