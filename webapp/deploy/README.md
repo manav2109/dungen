@@ -26,11 +26,6 @@ separate admin bootstrap step, the first signup is just a normal account.
 
 ## Docker (current setup)
 
-New files, none of them reusing the GCP-oriented Dockerfiles in
-`webapp/backend/Dockerfile` / `webapp/frontend/Dockerfile` (those target
-Cloud Run: two independent services, cross-origin, no in-process `/api`
-proxy — see `webapp/deploy-gcp/README.md`):
-
 - `docker-compose.yml` — the 4 services.
 - `backend.Dockerfile` — `python:3.12-slim`, fixed `--port 8000 --workers 1`
   (no Cloud-Run-style `$PORT` indirection).

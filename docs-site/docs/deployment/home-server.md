@@ -192,11 +192,6 @@ place of it. Both read and write the same hardcoded backend data path
 run both against the same data at the same time** — pick one path per
 machine until you've actually cut over.
 
-None of it reuses the GCP-oriented Dockerfiles from
-[GCP Cloud Run](/deployment/gcp-cloud-run) — those target two independent,
-cross-origin Cloud Run services with no in-process `/api` proxy, a
-different shape entirely:
-
 | File | Role |
 |---|---|
 | `docker-compose.yml` | The four services |
