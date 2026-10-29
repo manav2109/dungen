@@ -76,6 +76,38 @@ function defaultClusterForm(cluster: ClusterOut, index: number): ClusterForm {
   };
 }
 
+type TextBlockKind = "header" | "content";
+
+interface TextBlockForm {
+  text: string;
+  font: string;
+  size: number;
+  // Content only — prefixes each non-blank line with "• " at send time, a
+  // plain-text approximation rather than real PPTX bullet XML, enough to
+  // get bullet-style notes without new backend plumbing.
+  bullets: boolean;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+interface SlideTextForm {
+  header?: TextBlockForm | null;
+  content?: TextBlockForm | null;
+}
+
+const TEXT_FONT_OPTIONS = ["Calibri", "Arial", "Georgia", "Verdana", "Times New Roman"].map((f) => ({
+  value: f,
+  label: f,
+}));
+
+function defaultTextBlock(kind: TextBlockKind): TextBlockForm {
+  return kind === "header"
+    ? { text: "", font: "Calibri", size: 28, bullets: false, x: MARGIN, y: 0.15, w: SLIDE_W - 2 * MARGIN, h: 0.9 }
+    : { text: "", font: "Calibri", size: 16, bullets: false, x: MARGIN, y: SLIDE_H - 1.3, w: SLIDE_W - 2 * MARGIN, h: 1.1 };
+}
+
 /** A slide-sized SVG preview whose placement rect can be dragged to
  * reposition it — the x/y fields in "Fine-tune position" are the numeric
  * escape hatch, this is the primary way most people will actually move a
@@ -142,6 +174,7 @@ function PptxSlidePreview({
 interface StoredSettings {
   clusters?: Record<string, Omit<ClusterForm, "id">>;
   orphanAssignments?: Record<string, string>;
+  slideTexts?: Record<number, SlideTextForm>;
 }
 
 export default function ExportPanel({
@@ -174,6 +207,8 @@ export default function ExportPanel({
   const [clusterForms, setClusterForms] = useState<Record<string, ClusterForm>>({});
   // node_id -> cluster id, or "exclude"
   const [orphanAssignments, setOrphanAssignments] = useState<Record<string, string>>({});
+  // slide number -> optional title/caption text blocks for that slide.
+  const [slideTexts, setSlideTexts] = useState<Record<number, SlideTextForm>>({});
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
 
@@ -205,6 +240,7 @@ export default function ExportPanel({
           }
         });
         setOrphanAssignments(assignments);
+        setSlideTexts(stored.slideTexts || {});
       })
       .catch(() => !cancelled && setDetectError("Could not analyze this diagram for export."));
     return () => {
@@ -224,6 +260,24 @@ export default function ExportPanel({
     [updateCluster]
   );
 
+  const toggleTextBlock = useCallback((slideNumber: number, kind: TextBlockKind, on: boolean) => {
+    setSlideTexts((cur) => ({
+      ...cur,
+      [slideNumber]: { ...cur[slideNumber], [kind]: on ? cur[slideNumber]?.[kind] || defaultTextBlock(kind) : null },
+    }));
+  }, []);
+
+  const updateTextBlock = useCallback(
+    (slideNumber: number, kind: TextBlockKind, patch: Partial<TextBlockForm>) => {
+      setSlideTexts((cur) => {
+        const existing = cur[slideNumber]?.[kind];
+        if (!existing) return cur;
+        return { ...cur, [slideNumber]: { ...cur[slideNumber], [kind]: { ...existing, ...patch } } };
+      });
+    },
+    []
+  );
+
   const persistSettings = useCallback(() => {
     const settings = {
       ...diagram.export_settings,
@@ -232,6 +286,7 @@ export default function ExportPanel({
           Object.values(clusterForms).map(({ id, ...rest }) => [id, rest])
         ),
         orphanAssignments,
+        slideTexts,
       },
     };
     saveExportSettings(diagram.session_id, settings).catch(() => {});
@@ -240,7 +295,7 @@ export default function ExportPanel({
     // rather than waiting on a response this component may not be
     // mounted to receive.
     onSettingsSaved(settings);
-  }, [diagram.export_settings, diagram.session_id, clusterForms, orphanAssignments, onSettingsSaved]);
+  }, [diagram.export_settings, diagram.session_id, clusterForms, orphanAssignments, slideTexts, onSettingsSaved]);
 
   const nodesById = useMemo(
     () => Object.fromEntries(diagram.nodes.map((n) => [n.id, n])),
@@ -256,6 +311,18 @@ export default function ExportPanel({
     });
     return map;
   }, [detect, orphanAssignments]);
+
+  // Only slides that actually have an included diagram on them — a slide
+  // can't be generated with text alone (the backend requires at least one
+  // placement per slide), so there's nothing useful to show text
+  // controls for otherwise.
+  const slideNumbers = useMemo(() => {
+    const set = new Set<number>();
+    Object.values(clusterForms).forEach((f) => {
+      if (f.included) set.add(f.slideNumber);
+    });
+    return Array.from(set).sort((a, b) => a - b);
+  }, [clusterForms]);
 
   const onGenerate = useCallback(async () => {
     if (!detect) return;
@@ -288,6 +355,18 @@ export default function ExportPanel({
         setGenError("Nothing is included — enable at least one diagram.");
         return;
       }
+      const toTextPayload = (block: TextBlockForm | null | undefined) => {
+        if (!block || !block.text.trim()) return undefined;
+        const text = block.bullets
+          ? block.text
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map((line) => `• ${line}`)
+              .join("\n")
+          : block.text;
+        return { text, font: block.font, size: block.size, x: block.x, y: block.y, w: block.w, h: block.h };
+      };
       const slides = await Promise.all(
         slideNumbers.map(async (slideNumber) => {
           const placements = await Promise.all(
@@ -305,7 +384,13 @@ export default function ExportPanel({
               };
             })
           );
-          return { slide_number: slideNumber, placements };
+          const text = slideTexts[slideNumber];
+          return {
+            slide_number: slideNumber,
+            placements,
+            header: toTextPayload(text?.header),
+            content: toTextPayload(text?.content),
+          };
         })
       );
       await exportPptx({
@@ -322,7 +407,7 @@ export default function ExportPanel({
     } finally {
       setGenerating(false);
     }
-  }, [detect, clusterForms, orphansByCluster, diagram.svg, diagram.title, diagram.session_id, projectName, persistSettings, onClose]);
+  }, [detect, clusterForms, orphansByCluster, slideTexts, diagram.svg, diagram.title, diagram.session_id, projectName, persistSettings, onClose]);
 
   return (
     <Modal
@@ -542,6 +627,133 @@ export default function ExportPanel({
               </div>
             );
           })}
+
+          {slideNumbers.length > 0 && (
+            <div className="pptx-slide-texts">
+              <p className="eyebrow">Slide text</p>
+              <p className="hint">
+                Optional title and caption text for each slide — rendered as real PowerPoint text
+                boxes, separate from the diagram itself.
+              </p>
+              {slideNumbers.map((slideNumber) => (
+                <div key={slideNumber} className="pptx-slide-text-row">
+                  <p className="pptx-slide-text-heading">Slide {slideNumber}</p>
+                  {(["header", "content"] as const).map((kind) => {
+                    const block = slideTexts[slideNumber]?.[kind];
+                    return (
+                      <div key={kind} className="pptx-textblock">
+                        <Checkbox
+                          checked={!!block}
+                          onChange={(e) => toggleTextBlock(slideNumber, kind, e.target.checked)}
+                        >
+                          {kind === "header" ? "Title text" : "Caption / notes text"}
+                        </Checkbox>
+                        {block && (
+                          <>
+                            <Input.TextArea
+                              value={block.text}
+                              onChange={(e) => updateTextBlock(slideNumber, kind, { text: e.target.value })}
+                              placeholder={
+                                kind === "header" ? "Slide title" : "One line per paragraph or bullet"
+                              }
+                              autoSize={{ minRows: kind === "header" ? 1 : 2, maxRows: 6 }}
+                            />
+                            <div className="pptx-textblock-fields">
+                              <label>
+                                Font
+                                <Select
+                                  value={block.font}
+                                  style={{ width: 160 }}
+                                  options={TEXT_FONT_OPTIONS}
+                                  onChange={(font) => updateTextBlock(slideNumber, kind, { font })}
+                                />
+                              </label>
+                              <label>
+                                Size (pt)
+                                <InputNumber
+                                  min={6}
+                                  max={96}
+                                  value={block.size}
+                                  onChange={(v) => updateTextBlock(slideNumber, kind, { size: v ?? block.size })}
+                                />
+                              </label>
+                              {kind === "content" && (
+                                <label className="pptx-bullets-toggle">
+                                  <Checkbox
+                                    checked={block.bullets}
+                                    onChange={(e) =>
+                                      updateTextBlock(slideNumber, kind, { bullets: e.target.checked })
+                                    }
+                                  />
+                                  Bullet points
+                                </label>
+                              )}
+                            </div>
+                            <Collapse
+                              ghost
+                              size="small"
+                              className="pptx-finetune-collapse"
+                              items={[
+                                {
+                                  key: "finetune",
+                                  label: "Fine-tune position",
+                                  children: (
+                                    <div className="pptx-cluster-fields">
+                                      <p className="hint">Measured in inches from the slide's top-left corner.</p>
+                                      <label>
+                                        Horizontal position (in)
+                                        <InputNumber
+                                          min={0}
+                                          max={SLIDE_W}
+                                          step={0.1}
+                                          value={block.x}
+                                          onChange={(v) => updateTextBlock(slideNumber, kind, { x: v ?? block.x })}
+                                        />
+                                      </label>
+                                      <label>
+                                        Vertical position (in)
+                                        <InputNumber
+                                          min={0}
+                                          max={SLIDE_H}
+                                          step={0.1}
+                                          value={block.y}
+                                          onChange={(v) => updateTextBlock(slideNumber, kind, { y: v ?? block.y })}
+                                        />
+                                      </label>
+                                      <label>
+                                        Width (in)
+                                        <InputNumber
+                                          min={0.5}
+                                          max={SLIDE_W}
+                                          step={0.1}
+                                          value={block.w}
+                                          onChange={(v) => updateTextBlock(slideNumber, kind, { w: v ?? block.w })}
+                                        />
+                                      </label>
+                                      <label>
+                                        Height (in)
+                                        <InputNumber
+                                          min={0.3}
+                                          max={SLIDE_H}
+                                          step={0.1}
+                                          value={block.h}
+                                          onChange={(v) => updateTextBlock(slideNumber, kind, { h: v ?? block.h })}
+                                        />
+                                      </label>
+                                    </div>
+                                  ),
+                                },
+                              ]}
+                            />
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
 
           {detect && detect.orphans.length > 0 && (
             <div className="pptx-orphans">
