@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Modal, Tabs, Button, Select, InputNumber, Input, Checkbox, Spin, Empty, Segmented, Collapse } from "antd";
 import type { ClusterOut, ClusterDetectResponse, DiagramResponse, OrphanOut } from "../api";
 import { detectPptxClusters, exportPptx, saveExportSettings } from "../api";
@@ -74,6 +74,69 @@ function defaultClusterForm(cluster: ClusterOut, index: number): ClusterForm {
     excludedNodeIds: [],
     ...box,
   };
+}
+
+/** A slide-sized SVG preview whose placement rect can be dragged to
+ * reposition it — the x/y fields in "Fine-tune position" are the numeric
+ * escape hatch, this is the primary way most people will actually move a
+ * placement. Pointer capture keeps the drag going even if the cursor
+ * leaves the rect mid-move. */
+function PptxSlidePreview({
+  form,
+  onMove,
+}: {
+  form: Pick<ClusterForm, "x" | "y" | "w" | "h">;
+  onMove: (x: number, y: number) => void;
+}) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const dragRef = useRef<{ startClientX: number; startClientY: number; startX: number; startY: number } | null>(null);
+
+  const onPointerDown = (e: React.PointerEvent<SVGRectElement>) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragRef.current = { startClientX: e.clientX, startClientY: e.clientY, startX: form.x, startY: form.y };
+  };
+  // Shared by move and up: some input methods (a synthetic/instant drag,
+  // a trackpad that coalesces events) can deliver a pointerdown and a
+  // pointerup with no pointermove in between — committing only on move
+  // would silently lose the drag, so up re-applies the same math from
+  // whatever its own final coordinates are.
+  const applyFromEvent = (e: React.PointerEvent<SVGRectElement>) => {
+    if (!dragRef.current || !svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const scaleX = SLIDE_W / rect.width;
+    const scaleY = SLIDE_H / rect.height;
+    const dx = (e.clientX - dragRef.current.startClientX) * scaleX;
+    const dy = (e.clientY - dragRef.current.startClientY) * scaleY;
+    const maxX = Math.max(0, SLIDE_W - form.w);
+    const maxY = Math.max(0, SLIDE_H - form.h);
+    const x = Math.min(Math.max(0, dragRef.current.startX + dx), maxX);
+    const y = Math.min(Math.max(0, dragRef.current.startY + dy), maxY);
+    onMove(x, y);
+  };
+  const onPointerUp = (e: React.PointerEvent<SVGRectElement>) => {
+    if (!dragRef.current) return;
+    applyFromEvent(e);
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    dragRef.current = null;
+  };
+
+  return (
+    <svg ref={svgRef} className="pptx-slide-preview" viewBox={`0 0 ${SLIDE_W} ${SLIDE_H}`} aria-hidden="true">
+      <rect x={0} y={0} width={SLIDE_W} height={SLIDE_H} className="pptx-slide-rect" />
+      <rect
+        x={form.x}
+        y={form.y}
+        width={form.w}
+        height={form.h}
+        className="pptx-placement-rect pptx-placement-draggable"
+        onPointerDown={onPointerDown}
+        onPointerMove={applyFromEvent}
+        onPointerUp={onPointerUp}
+      />
+    </svg>
+  );
 }
 
 interface StoredSettings {
@@ -474,10 +537,7 @@ export default function ExportPanel({
                   />
                 )}
                 {form.included && (
-                  <svg className="pptx-slide-preview" viewBox={`0 0 ${SLIDE_W} ${SLIDE_H}`} aria-hidden="true">
-                    <rect x={0} y={0} width={SLIDE_W} height={SLIDE_H} className="pptx-slide-rect" />
-                    <rect x={form.x} y={form.y} width={form.w} height={form.h} className="pptx-placement-rect" />
-                  </svg>
+                  <PptxSlidePreview form={form} onMove={(x, y) => updateCluster(cluster.id, { x, y })} />
                 )}
               </div>
             );

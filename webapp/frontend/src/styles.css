@@ -294,6 +294,8 @@ body.panning { cursor: grabbing; user-select: none; }
 .pptx-slide-preview { width: 100%; max-width: 360px; aspect-ratio: 16 / 9; background: #fff; border: 1px solid var(--border-strong); border-radius: 4px; }
 .pptx-slide-rect { fill: #fff; stroke: var(--border-strong); stroke-width: .02; }
 .pptx-placement-rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: .04; }
+.pptx-placement-draggable { cursor: grab; touch-action: none; }
+.pptx-placement-draggable:active { cursor: grabbing; }
 
 .pptx-mode-row { display: flex; flex-direction: column; gap: 6px; }
 .pptx-mode-hint { margin: 0; }
