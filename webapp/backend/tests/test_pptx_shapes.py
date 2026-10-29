@@ -104,3 +104,33 @@ def test_render_native_placement_handles_empty_selection_without_error():
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     render_native_placement(slide, d, spec, [], (0.5, 0.5, 12.0, 6.0))
     assert len(list(slide.shapes)) == 0
+
+
+def test_render_native_placement_sets_explicit_text_color_on_every_run(tmp_path):
+    """Regression test: add_shape()'s default <p:style> resolves an
+    unstyled run's font color to the theme's lt1 (white in the standard
+    Office theme), so every label was rendering invisible-to-washed-out
+    against a light fill until _apply_text started setting font.color.rgb
+    explicitly. Round-trips through a real save/load, since python-pptx's
+    in-memory Font.color can read back as None before the XML is
+    serialized even when the attribute will be written correctly."""
+    spec, d = _fixture()
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    render_native_placement(slide, d, spec, ['n1', 'n2', 'g1', 'ent1'], (0.5, 0.5, 12.0, 6.0))
+
+    out = tmp_path / 'colors.pptx'
+    prs.save(str(out))
+    prs2 = Presentation(str(out))
+    checked = 0
+    for shape in prs2.slides[0].shapes:
+        if not shape.has_text_frame:
+            continue
+        for paragraph in shape.text_frame.paragraphs:
+            if not paragraph.runs:
+                continue
+            checked += 1
+            color = paragraph.font.color
+            assert color.type is not None, f"no explicit color on {paragraph.runs[0].text!r}"
+            assert str(color.rgb) == '333333'
+    assert checked > 0

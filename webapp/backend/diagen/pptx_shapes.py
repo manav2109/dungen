@@ -68,6 +68,9 @@ DASH_STYLE_MAP = {
     'dash-dot': MSO_LINE_DASH_STYLE.DASH_DOT,
 }
 
+# Matches render_svg.py's TEXT constant ('#333333') — see _apply_text.
+TEXT_COLOR = RGBColor(0x33, 0x33, 0x33)
+
 
 def _mso_shape_kind(shape_name: str) -> int:
     low = shape_name.lower()
@@ -168,6 +171,13 @@ def _apply_text(shape, label: str, *, bold=False, align=PP_ALIGN.CENTER,
     p = tf.paragraphs[0]
     p.alignment = align
     p.font.bold = bold
+    # python-pptx's add_shape attaches a <p:style> whose fontRef resolves to
+    # the theme's lt1 (white in the standard Office theme) by default — a
+    # run with no explicit color cascades to that, so every shape's text
+    # renders invisible-to-washed-out against any light fill unless this is
+    # set explicitly. #333333 matches render_svg.py's own TEXT constant, so
+    # PPTX text reads the same dark gray as the in-app rendering.
+    p.font.color.rgb = TEXT_COLOR
     if size_pt:
         p.font.size = Pt(size_pt)
 
