@@ -8,6 +8,26 @@ http://dev-ai.site:8080 {
 }
 
 http://drawgen.dev-ai.site:8080 {
+	# See Caddyfile.docker for why these three precede the generic
+	# /api/* block: app/main.py's auth_middleware 401s anything under
+	# /api/* that isn't in PUBLIC_API_PATHS, so /api/docs forwarded
+	# unchanged would never reach FastAPI's own /docs route. Rewriting
+	# the path before proxying keeps it outside that prefix.
+	handle /api/docs {
+		rewrite * /docs
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	handle /api/redoc {
+		rewrite * /redoc
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	handle /api/openapi.json {
+		rewrite * /openapi.json
+		reverse_proxy 127.0.0.1:8000
+	}
+
 	handle /api/* {
 		reverse_proxy 127.0.0.1:8000
 	}

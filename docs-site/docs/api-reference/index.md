@@ -37,23 +37,15 @@ http://localhost:8000/openapi.json
 
 ## In production
 
-:::caution[Not currently wired through]
-Caddy's `handle /api/*` block forwards the request path to the backend
-**unchanged** — it doesn't strip the `/api` prefix. That's correct for the
-app's own routes, since they're already declared with a literal `/api/...`
-path (see the [endpoint table](/architecture/overview#api)). But FastAPI's
-auto-generated `/docs`, `/redoc`, and `/openapi.json` routes are fixed at
-the backend's root regardless of how other routes are prefixed — so a
-request to `/api/docs` doesn't match anything the backend serves, and a
-request to the bare `/docs` on this domain now reaches *this*
-documentation site instead (same path, different purpose, same domain).
+Bare `/docs` on this domain reaches *this* documentation site, not the
+backend's Swagger UI — that path's already claimed here. The backend's own
+interactive docs are reachable instead under the `/api/` prefix, via a
+Caddy rule that rewrites the three routes above to the backend's
+unprefixed paths before proxying (FastAPI's `docs_url`/`redoc_url`/
+`openapi_url` are still the plain defaults — `app/main.py` is untouched):
 
-Net effect: the live Swagger/ReDoc UI isn't currently exposed publicly
-under `drawgen.dev-ai.site` at all, through either `/api/docs` or `/docs`.
-Reaching it today means running the backend locally and using the
-`localhost` URLs above. Exposing it in production needs either a small
-backend-side alias (serving those three routes again under an `/api/`
-prefix) or a dedicated Caddy rule for just those three paths — tracked as a
-follow-up for whoever owns the Caddy configuration, not something this
-docs site can route around on its own.
-:::
+```text
+https://drawgen.dev-ai.site/api/docs
+https://drawgen.dev-ai.site/api/redoc
+https://drawgen.dev-ai.site/api/openapi.json
+```

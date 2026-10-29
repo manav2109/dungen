@@ -27,6 +27,31 @@ http://drawgen.dev-ai.site:8080 {
 	# it's written, so this catches it before that fallthrough happens.
 	redir /docs /docs/ permanent
 
+	# FastAPI's auto docs/redoc/openapi routes live at the backend's own
+	# root (/docs, /redoc, /openapi.json) — main.py never overrides them.
+	# Forwarding /api/docs straight through (like the generic /api/*
+	# block below) would hit app/main.py's auth_middleware, which 401s
+	# anything under /api/* that isn't in PUBLIC_API_PATHS, before the
+	# request even reaches those routes. These three `handle` blocks sit
+	# above the generic one (Caddy's `handle` picks the first matching
+	# block, so order here matters) and rewrite the path internally
+	# before proxying, so the backend sees plain "/docs" — outside the
+	# "/api/" prefix the middleware gates — rather than "/api/docs".
+	handle /api/docs {
+		rewrite * /docs
+		reverse_proxy backend:8000
+	}
+
+	handle /api/redoc {
+		rewrite * /redoc
+		reverse_proxy backend:8000
+	}
+
+	handle /api/openapi.json {
+		rewrite * /openapi.json
+		reverse_proxy backend:8000
+	}
+
 	handle /api/* {
 		reverse_proxy backend:8000
 	}
