@@ -316,6 +316,18 @@ body.panning { cursor: grabbing; user-select: none; }
 .pptx-textblock-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); font-weight: 550; }
 .pptx-bullets-toggle { flex-direction: row !important; align-items: center; gap: 6px !important; }
 
+.pptx-overview-section { display: flex; flex-direction: column; gap: 6px; }
+.pptx-overview-wrap { max-height: 320px; overflow: auto; border: 1px solid var(--border-strong); border-radius: var(--radius); background: #fff; padding: 4px; }
+.pptx-overview-wrap svg { display: block; }
+.pptx-overview-rect { fill-opacity: .08; stroke-width: 2.5; pointer-events: none; }
+.pptx-overview-rect.pptx-overview-cluster { stroke: var(--accent); fill: var(--accent); }
+.pptx-overview-rect.pptx-overview-orphan-assigned { stroke: #d6a015; fill: #d6a015; stroke-dasharray: 6 4; }
+.pptx-overview-rect.pptx-overview-orphan-excluded { stroke: #999; fill: #999; stroke-dasharray: 3 4; }
+.pptx-overview-label { font-size: 16px; font-weight: 600; pointer-events: none; }
+.pptx-overview-label.pptx-overview-cluster { fill: var(--accent); }
+.pptx-overview-label.pptx-overview-orphan-assigned { fill: #a87b0c; }
+.pptx-overview-label.pptx-overview-orphan-excluded { fill: #777; }
+
 .pptx-orphans { border-top: 1px solid var(--border); padding-top: 14px; }
 .pptx-orphan-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; flex-wrap: wrap; }
 .pptx-orphan-badge { padding: 3px 10px; border-radius: 999px; background: #fff3cd; border: 1px solid #f0d78c; font-size: 12px; font-weight: 550; }

@@ -108,6 +108,59 @@ function defaultTextBlock(kind: TextBlockKind): TextBlockForm {
     : { text: "", font: "Calibri", size: 16, bullets: false, x: MARGIN, y: SLIDE_H - 1.3, w: SLIDE_W - 2 * MARGIN, h: 1.1 };
 }
 
+function escapeXml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function overviewOverlayRect(bbox: BBox, label: string, kind: string): string {
+  const pad = 8;
+  const x = bbox.x - pad;
+  const y = bbox.y - pad;
+  const w = bbox.w + pad * 2;
+  const h = bbox.h + pad * 2;
+  return (
+    `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="6" class="pptx-overview-rect pptx-overview-${kind}" />` +
+    `<text x="${x + 6}" y="${y - 8}" class="pptx-overview-label pptx-overview-${kind}">${escapeXml(label)}</text>`
+  );
+}
+
+/** Splices cluster/orphan highlight rects directly into a copy of the
+ * diagram's own rendered SVG, instead of a plain list — `render_svg.py`'s
+ * root `viewBox` already uses the same coordinate units as `bbox` on every
+ * cluster/orphan, so the overlay lines up with zero conversion math. Labels
+ * are untrusted node/cluster text, so they're XML-escaped before splicing
+ * into markup that gets rendered via dangerouslySetInnerHTML. */
+function buildDiagramOverviewSvg(
+  svgMarkup: string,
+  clusters: ClusterOut[],
+  clusterNames: Record<string, string>,
+  orphans: OrphanOut[],
+  orphanAssignments: Record<string, string>
+): string {
+  const openTagEnd = svgMarkup.indexOf(">");
+  const closeTagStart = svgMarkup.lastIndexOf("</svg>");
+  if (openTagEnd < 0 || closeTagStart < 0) return svgMarkup;
+  const openTag = svgMarkup
+    .slice(0, openTagEnd + 1)
+    .replace(/\swidth="[^"]*"/, "")
+    .replace(/\sheight="[^"]*"/, "")
+    .replace("<svg", '<svg width="100%"');
+  const inner = svgMarkup.slice(openTagEnd + 1, closeTagStart);
+
+  const overlays =
+    clusters.map((c) => overviewOverlayRect(c.bbox, clusterNames[c.id] || c.suggested_name, "cluster")).join("") +
+    orphans
+      .map((o) => {
+        const assigned = orphanAssignments[o.node_id];
+        const excluded = !assigned || assigned === "exclude";
+        const label = excluded ? `${o.label} (excluded)` : `${o.label} → ${clusterNames[assigned] || assigned}`;
+        return overviewOverlayRect(o.bbox, label, excluded ? "orphan-excluded" : "orphan-assigned");
+      })
+      .join("");
+
+  return `${openTag}${inner}<g class="pptx-overview-overlay">${overlays}</g></svg>`;
+}
+
 /** A slide-sized SVG preview whose placement rect can be dragged to
  * reposition it — the x/y fields in "Fine-tune position" are the numeric
  * escape hatch, this is the primary way most people will actually move a
@@ -312,6 +365,12 @@ export default function ExportPanel({
     return map;
   }, [detect, orphanAssignments]);
 
+  const overviewSvg = useMemo(() => {
+    if (!detect || (detect.clusters.length === 0 && detect.orphans.length === 0)) return null;
+    const clusterNames = Object.fromEntries(Object.values(clusterForms).map((f) => [f.id, f.name]));
+    return buildDiagramOverviewSvg(diagram.svg, detect.clusters, clusterNames, detect.orphans, orphanAssignments);
+  }, [detect, clusterForms, orphanAssignments, diagram.svg]);
+
   // Only slides that actually have an included diagram on them — a slide
   // can't be generated with text alone (the backend requires at least one
   // placement per slide), so there's nothing useful to show text
@@ -461,6 +520,17 @@ export default function ExportPanel({
           {detectError && <p className="error">{detectError}</p>}
           {detect && detect.clusters.length === 0 && (
             <Empty description="No connected shapes found to export." />
+          )}
+
+          {overviewSvg && (
+            <div className="pptx-overview-section">
+              <p className="eyebrow">What's on this canvas</p>
+              <p className="hint">
+                Each highlighted group becomes its own diagram below. Amber boxes are shapes not
+                connected to anything — assign or exclude them further down.
+              </p>
+              <div className="pptx-overview-wrap" dangerouslySetInnerHTML={{ __html: overviewSvg }} />
+            </div>
           )}
 
           {detect?.clusters.map((cluster) => {
