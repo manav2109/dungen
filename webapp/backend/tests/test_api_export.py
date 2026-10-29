@@ -139,6 +139,102 @@ def test_filename_with_unsafe_characters_is_sanitized(client, auth_headers):
     assert ':' not in disposition.split('filename=')[1]
 
 
+def test_generate_native_shapes_placement_produces_autoshapes(client, auth_headers):
+    headers = auth_headers
+    session_id = _blank_session(client, headers)
+    a = _create_node(client, headers, session_id, 0, 0, 'A')
+    b = _create_node(client, headers, session_id, 200, 0, 'B')
+    r = client.post(
+        '/api/edge/create',
+        json={'session_id': session_id, 'source_id': a['id'], 'target_id': b['id'], 'relation_type': 'association'},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+
+    payload = {
+        'session_id': session_id,
+        'filename': 'native test',
+        'slides': [
+            {'slide_number': 1, 'placements': [
+                {'node_ids': [a['id'], b['id']], 'x': 0.5, 'y': 0.5, 'w': 6.0, 'h': 3.0},
+            ]},
+        ],
+    }
+    r = client.post('/api/export/pptx/generate', json=payload, headers=headers)
+    assert r.status_code == 200, r.text
+    prs = Presentation(io.BytesIO(r.content))
+    shapes = list(prs.slides[0].shapes)
+    auto_shapes = [s for s in shapes if s.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE]
+    assert {s.text for s in auto_shapes} == {'A', 'B'}
+    connectors = [s for s in shapes if s.shape_type == MSO_SHAPE_TYPE.LINE]
+    assert len(connectors) == 1
+
+
+def test_generate_mixes_picture_and_native_placements_on_one_slide(client, auth_headers):
+    headers = auth_headers
+    session_id = _blank_session(client, headers)
+    a = _create_node(client, headers, session_id, 0, 0, 'A')
+
+    payload = {
+        'session_id': session_id,
+        'filename': 'mixed',
+        'slides': [
+            {'slide_number': 1, 'placements': [
+                {'image_png_base64': _TINY_PNG_B64, 'x': 0.5, 'y': 0.5, 'w': 2.0, 'h': 2.0},
+                {'node_ids': [a['id']], 'x': 7.0, 'y': 0.5, 'w': 4.0, 'h': 2.0},
+            ]},
+        ],
+    }
+    r = client.post('/api/export/pptx/generate', json=payload, headers=headers)
+    assert r.status_code == 200, r.text
+    prs = Presentation(io.BytesIO(r.content))
+    shapes = list(prs.slides[0].shapes)
+    assert len([s for s in shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]) == 1
+    assert len([s for s in shapes if s.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE]) == 1
+
+
+def test_generate_native_placement_without_session_id_is_rejected(client, auth_headers):
+    headers = auth_headers
+    payload = {
+        'filename': 'no session',
+        'slides': [
+            {'slide_number': 1, 'placements': [
+                {'node_ids': ['n1'], 'x': 0.5, 'y': 0.5, 'w': 2.0, 'h': 2.0},
+            ]},
+        ],
+    }
+    r = client.post('/api/export/pptx/generate', json=payload, headers=headers)
+    assert r.status_code == 400
+
+
+def test_placement_with_both_image_and_node_ids_is_rejected(client, auth_headers):
+    headers = auth_headers
+    payload = {
+        'filename': 'both',
+        'slides': [
+            {'slide_number': 1, 'placements': [
+                {'image_png_base64': _TINY_PNG_B64, 'node_ids': ['n1'], 'x': 0.0, 'y': 0.0, 'w': 1.0, 'h': 1.0},
+            ]},
+        ],
+    }
+    r = client.post('/api/export/pptx/generate', json=payload, headers=headers)
+    assert r.status_code == 422
+
+
+def test_placement_with_neither_image_nor_node_ids_is_rejected(client, auth_headers):
+    headers = auth_headers
+    payload = {
+        'filename': 'neither',
+        'slides': [
+            {'slide_number': 1, 'placements': [
+                {'x': 0.0, 'y': 0.0, 'w': 1.0, 'h': 1.0},
+            ]},
+        ],
+    }
+    r = client.post('/api/export/pptx/generate', json=payload, headers=headers)
+    assert r.status_code == 422
+
+
 def test_export_settings_round_trip_through_project_save_and_load(client, auth_headers):
     headers = auth_headers
     session_id = _blank_session(client, headers)

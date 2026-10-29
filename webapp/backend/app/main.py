@@ -25,7 +25,7 @@ from typing import Optional
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
@@ -35,6 +35,7 @@ from diagen.render_svg import SvgRenderer
 from diagen.render_drawio import to_drawio
 from diagen.interop import node_dicts, edge_dicts, connections_map
 from diagen.clusters import find_clusters
+from diagen.pptx_shapes import render_native_placement
 from diagen.defaults import DEFAULT_SHAPES, DEFAULT_LINES
 from diagen.templates import TEMPLATES, build_outline
 from diagen.model import Node, Edge
@@ -386,11 +387,24 @@ class ClusterDetectResponse(BaseModel):
 class PptxPlacement(BaseModel):
     # Base64-inflated bound on a ~15MB PNG — matches MAX_UPLOAD_BYTES's
     # rationale (catches abuse, not real images from this app's own canvas).
-    image_png_base64: str = Field(max_length=25_000_000)
+    # Exactly one of image_png_base64 (raster "Picture" mode) or node_ids
+    # (native-PowerPoint-shapes mode, see diagen/pptx_shapes.py) must be
+    # set — the two generation paths are mutually exclusive per placement.
+    image_png_base64: Optional[str] = Field(default=None, max_length=25_000_000)
+    node_ids: Optional[list[str]] = Field(default=None, min_length=1, max_length=500)
     x: float = Field(ge=0)
     y: float = Field(ge=0)
     w: float = Field(gt=0)
     h: float = Field(gt=0)
+
+    @model_validator(mode='after')
+    def _exactly_one_mode(self):
+        has_image = self.image_png_base64 is not None
+        has_nodes = self.node_ids is not None
+        if has_image == has_nodes:
+            raise ValueError(
+                "Exactly one of image_png_base64 or node_ids must be set on a placement")
+        return self
 
 
 class PptxTextBlock(BaseModel):
@@ -411,6 +425,11 @@ class PptxSlide(BaseModel):
 
 
 class PptxGenerateRequest(BaseModel):
+    # Optional: only needed when at least one placement uses node_ids
+    # (native-shapes mode), which looks up live node/shape/edge data from
+    # the session's diagram — picture-mode placements carry everything
+    # they need (a finished PNG) and never touch the session at all.
+    session_id: Optional[str] = None
     filename: str = Field(min_length=1, max_length=200)
     slide_width_in: float = Field(default=13.333, gt=1, le=56)
     slide_height_in: float = Field(default=7.5, gt=1, le=56)
@@ -1221,11 +1240,18 @@ def export_settings_save(req: ExportSettingsRequest):
 
 @app.post("/api/export/pptx/generate")
 def export_pptx_generate(req: PptxGenerateRequest):
-    """Builds a .pptx in memory from PNGs the frontend already rasterized
-    client-side (see ExportPanel.tsx — the live SVG is what's actually
-    cropped/rasterized, so this never needs a server-side SVG renderer).
-    `add_picture` embeds each image's bytes directly into the file, not a
-    path, so it opens identically on any machine."""
+    """Builds a .pptx in memory. Picture-mode placements embed a PNG the
+    frontend already rasterized client-side (see ExportPanel.tsx — the live
+    SVG is what's actually cropped/rasterized, so this never needs a
+    server-side SVG renderer); `add_picture` embeds the bytes directly, not
+    a path, so it opens identically on any machine. Native-shapes-mode
+    placements instead rebuild real PowerPoint AutoShapes/connectors from
+    the session's live diagram — see diagen/pptx_shapes.py."""
+    needs_session = any(p.node_ids is not None for s in req.slides for p in s.placements)
+    if needs_session and not req.session_id:
+        raise HTTPException(400, "session_id is required for native-shapes placements")
+    session = _get_session(req.session_id) if req.session_id else None
+
     prs = Presentation()
     prs.slide_width = Inches(req.slide_width_in)
     prs.slide_height = Inches(req.slide_height_in)
@@ -1237,6 +1263,12 @@ def export_pptx_generate(req: PptxGenerateRequest):
     for slide_req in req.slides:
         slide = prs.slides[slide_req.slide_number - 1]
         for placement in slide_req.placements:
+            if placement.node_ids is not None:
+                render_native_placement(
+                    slide, session.diagram, session.spec, placement.node_ids,
+                    (placement.x, placement.y, placement.w, placement.h),
+                )
+                continue
             try:
                 png_bytes = base64.b64decode(placement.image_png_base64, validate=True)
             except Exception as exc:

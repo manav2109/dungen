@@ -497,7 +497,12 @@ export async function saveExportSettings(sessionId: string, settings: Record<str
 }
 
 export interface PptxPlacement {
-  image_png_base64: string;
+  // Exactly one of these — image_png_base64 is "Picture" mode (a raster
+  // crop rasterized client-side), node_ids is "Native shapes" mode (the
+  // backend rebuilds real PowerPoint AutoShapes/connectors from the live
+  // diagram; see diagen/pptx_shapes.py).
+  image_png_base64?: string;
+  node_ids?: string[];
   x: number;
   y: number;
   w: number;
@@ -522,6 +527,10 @@ export interface PptxSlidePayload {
 }
 
 export interface PptxGeneratePayload {
+  // Required when any placement uses node_ids (native-shapes mode) — the
+  // backend looks up live node/shape/edge data from this session. Omit
+  // for picture-only exports.
+  session_id?: string;
   filename: string;
   slide_width_in?: number;
   slide_height_in?: number;

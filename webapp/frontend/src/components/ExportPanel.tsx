@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Modal, Tabs, Button, Select, InputNumber, Input, Checkbox, Spin, Empty } from "antd";
+import { Modal, Tabs, Button, Select, InputNumber, Input, Checkbox, Spin, Empty, Segmented, Collapse } from "antd";
 import type { ClusterOut, ClusterDetectResponse, DiagramResponse, OrphanOut } from "../api";
 import { detectPptxClusters, exportPptx, saveExportSettings } from "../api";
 import { padBBox, rasterizeSvgRegion, unionBBox, type BBox } from "../svgRaster";
 
 type Preset = "full" | "top-half" | "bottom-half" | "centered";
+// "shapes": each box becomes a real, individually-editable PowerPoint
+// shape (and real connectors) — see diagen/pptx_shapes.py. "picture": the
+// original flat raster crop, an exact visual copy that can't be edited.
+type DisplayMode = "shapes" | "picture";
 
 interface ClusterForm {
   id: string;
@@ -12,6 +16,12 @@ interface ClusterForm {
   included: boolean;
   slideNumber: number;
   preset: Preset;
+  mode: DisplayMode;
+  // Which of this cluster's top-level member/assigned-orphan node ids to
+  // leave OUT of the export — stored as an exclusion list (not inclusion)
+  // so a newly-assigned orphan is included by default without this form
+  // needing to know about it in advance.
+  excludedNodeIds: string[];
   x: number;
   y: number;
   w: number;
@@ -60,6 +70,8 @@ function defaultClusterForm(cluster: ClusterOut, index: number): ClusterForm {
     included: true,
     slideNumber: index + 1,
     preset: "full",
+    mode: "shapes",
+    excludedNodeIds: [],
     ...box,
   };
 }
@@ -112,9 +124,10 @@ export default function ExportPanel({
         const forms: Record<string, ClusterForm> = {};
         result.clusters.forEach((cluster, index) => {
           const saved = stored.clusters?.[cluster.id];
-          forms[cluster.id] = saved
-            ? { id: cluster.id, ...saved }
-            : defaultClusterForm(cluster, index);
+          // Merge onto fresh defaults rather than replacing wholesale —
+          // settings saved before "mode"/"excludedNodeIds" existed would
+          // otherwise load with those fields undefined.
+          forms[cluster.id] = { ...defaultClusterForm(cluster, index), ...saved, id: cluster.id };
         });
         setClusterForms(forms);
         const assignments: Record<string, string> = {};
@@ -166,6 +179,11 @@ export default function ExportPanel({
     onSettingsSaved(settings);
   }, [diagram.export_settings, diagram.session_id, clusterForms, orphanAssignments, onSettingsSaved]);
 
+  const nodesById = useMemo(
+    () => Object.fromEntries(diagram.nodes.map((n) => [n.id, n])),
+    [diagram.nodes]
+  );
+
   const orphansByCluster = useMemo(() => {
     const map: Record<string, OrphanOut[]> = {};
     (detect?.orphans || []).forEach((o) => {
@@ -181,16 +199,26 @@ export default function ExportPanel({
     setGenerating(true);
     setGenError(null);
     try {
-      const bySlide: Record<number, { form: ClusterForm; crop: BBox }[]> = {};
+      type Pending =
+        | { form: ClusterForm; kind: "picture"; crop: BBox }
+        | { form: ClusterForm; kind: "shapes"; nodeIds: string[] };
+      const bySlide: Record<number, Pending[]> = {};
       for (const cluster of detect.clusters) {
         const form = clusterForms[cluster.id];
         if (!form?.included) continue;
         const assignedOrphans = orphansByCluster[cluster.id] || [];
-        const crop = padBBox(
-          unionBBox([cluster.bbox, ...assignedOrphans.map((o) => o.bbox)]),
-          RASTER_PADDING
-        );
-        (bySlide[form.slideNumber] ||= []).push({ form, crop });
+        if (form.mode === "picture") {
+          const crop = padBBox(
+            unionBBox([cluster.bbox, ...assignedOrphans.map((o) => o.bbox)]),
+            RASTER_PADDING
+          );
+          (bySlide[form.slideNumber] ||= []).push({ form, kind: "picture", crop });
+        } else {
+          const memberIds = [...cluster.top_level_ids, ...assignedOrphans.map((o) => o.node_id)];
+          const nodeIds = memberIds.filter((id) => !form.excludedNodeIds.includes(id));
+          if (nodeIds.length === 0) continue;
+          (bySlide[form.slideNumber] ||= []).push({ form, kind: "shapes", nodeIds });
+        }
       }
       const slideNumbers = Object.keys(bySlide).map(Number);
       if (slideNumbers.length === 0) {
@@ -200,18 +228,25 @@ export default function ExportPanel({
       const slides = await Promise.all(
         slideNumbers.map(async (slideNumber) => {
           const placements = await Promise.all(
-            bySlide[slideNumber].map(async ({ form, crop }) => ({
-              image_png_base64: await rasterizeSvgRegion(diagram.svg, crop),
-              x: form.x,
-              y: form.y,
-              w: form.w,
-              h: form.h,
-            }))
+            bySlide[slideNumber].map(async (pending) => {
+              const { form } = pending;
+              if (pending.kind === "shapes") {
+                return { node_ids: pending.nodeIds, x: form.x, y: form.y, w: form.w, h: form.h };
+              }
+              return {
+                image_png_base64: await rasterizeSvgRegion(diagram.svg, pending.crop),
+                x: form.x,
+                y: form.y,
+                w: form.w,
+                h: form.h,
+              };
+            })
           );
           return { slide_number: slideNumber, placements };
         })
       );
       await exportPptx({
+        session_id: diagram.session_id,
         filename: projectName || diagram.title || "diagram",
         slide_width_in: SLIDE_W,
         slide_height_in: SLIDE_H,
@@ -224,7 +259,7 @@ export default function ExportPanel({
     } finally {
       setGenerating(false);
     }
-  }, [detect, clusterForms, orphansByCluster, diagram.svg, diagram.title, projectName, persistSettings, onClose]);
+  }, [detect, clusterForms, orphansByCluster, diagram.svg, diagram.title, diagram.session_id, projectName, persistSettings, onClose]);
 
   return (
     <Modal
@@ -302,6 +337,58 @@ export default function ExportPanel({
                   </span>
                 </div>
                 {form.included && (
+                  <div className="pptx-mode-row">
+                    <Segmented
+                      value={form.mode}
+                      onChange={(mode) => updateCluster(cluster.id, { mode: mode as DisplayMode })}
+                      options={[
+                        { value: "shapes", label: "Native shapes" },
+                        { value: "picture", label: "Picture" },
+                      ]}
+                    />
+                    <p className="hint pptx-mode-hint">
+                      {form.mode === "shapes"
+                        ? "Each box stays its own editable PowerPoint shape — you can move, recolor, or delete pieces afterward. Connecting lines may route a little differently than shown here."
+                        : "An exact visual copy of what's on screen, embedded as one flat image — can't be edited or taken apart in PowerPoint."}
+                    </p>
+                  </div>
+                )}
+                {form.included && form.mode === "shapes" && (
+                  <div className="pptx-node-checklist">
+                    <p className="eyebrow">Shapes to include on this slide</p>
+                    {cluster.top_level_ids.map((nodeId) => (
+                      <label key={nodeId} className="pptx-node-check">
+                        <Checkbox
+                          checked={!form.excludedNodeIds.includes(nodeId)}
+                          onChange={(e) =>
+                            updateCluster(cluster.id, {
+                              excludedNodeIds: e.target.checked
+                                ? form.excludedNodeIds.filter((id) => id !== nodeId)
+                                : [...form.excludedNodeIds, nodeId],
+                            })
+                          }
+                        />
+                        {nodesById[nodeId]?.label || nodeId}
+                      </label>
+                    ))}
+                    {assigned.map((orphan) => (
+                      <label key={orphan.node_id} className="pptx-node-check">
+                        <Checkbox
+                          checked={!form.excludedNodeIds.includes(orphan.node_id)}
+                          onChange={(e) =>
+                            updateCluster(cluster.id, {
+                              excludedNodeIds: e.target.checked
+                                ? form.excludedNodeIds.filter((id) => id !== orphan.node_id)
+                                : [...form.excludedNodeIds, orphan.node_id],
+                            })
+                          }
+                        />
+                        {orphan.label} <span className="pptx-orphan-tag">orphan</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {form.included && (
                   <div className="pptx-cluster-fields">
                     <label>
                       Slide
@@ -326,47 +413,65 @@ export default function ExportPanel({
                         ]}
                       />
                     </label>
-                    <label>
-                      X (in)
-                      <InputNumber
-                        min={0}
-                        max={SLIDE_W}
-                        step={0.1}
-                        value={form.x}
-                        onChange={(v) => updateCluster(cluster.id, { x: v ?? form.x })}
-                      />
-                    </label>
-                    <label>
-                      Y (in)
-                      <InputNumber
-                        min={0}
-                        max={SLIDE_H}
-                        step={0.1}
-                        value={form.y}
-                        onChange={(v) => updateCluster(cluster.id, { y: v ?? form.y })}
-                      />
-                    </label>
-                    <label>
-                      Width (in)
-                      <InputNumber
-                        min={0.5}
-                        max={SLIDE_W}
-                        step={0.1}
-                        value={form.w}
-                        onChange={(v) => updateCluster(cluster.id, { w: v ?? form.w })}
-                      />
-                    </label>
-                    <label>
-                      Height (in)
-                      <InputNumber
-                        min={0.5}
-                        max={SLIDE_H}
-                        step={0.1}
-                        value={form.h}
-                        onChange={(v) => updateCluster(cluster.id, { h: v ?? form.h })}
-                      />
-                    </label>
                   </div>
+                )}
+                {form.included && (
+                  <Collapse
+                    ghost
+                    size="small"
+                    className="pptx-finetune-collapse"
+                    items={[
+                      {
+                        key: "finetune",
+                        label: "Fine-tune position",
+                        children: (
+                          <div className="pptx-cluster-fields">
+                            <p className="hint">Measured in inches from the slide's top-left corner.</p>
+                            <label>
+                              Horizontal position (in)
+                              <InputNumber
+                                min={0}
+                                max={SLIDE_W}
+                                step={0.1}
+                                value={form.x}
+                                onChange={(v) => updateCluster(cluster.id, { x: v ?? form.x })}
+                              />
+                            </label>
+                            <label>
+                              Vertical position (in)
+                              <InputNumber
+                                min={0}
+                                max={SLIDE_H}
+                                step={0.1}
+                                value={form.y}
+                                onChange={(v) => updateCluster(cluster.id, { y: v ?? form.y })}
+                              />
+                            </label>
+                            <label>
+                              Width (in)
+                              <InputNumber
+                                min={0.5}
+                                max={SLIDE_W}
+                                step={0.1}
+                                value={form.w}
+                                onChange={(v) => updateCluster(cluster.id, { w: v ?? form.w })}
+                              />
+                            </label>
+                            <label>
+                              Height (in)
+                              <InputNumber
+                                min={0.5}
+                                max={SLIDE_H}
+                                step={0.1}
+                                value={form.h}
+                                onChange={(v) => updateCluster(cluster.id, { h: v ?? form.h })}
+                              />
+                            </label>
+                          </div>
+                        ),
+                      },
+                    ]}
+                  />
                 )}
                 {form.included && (
                   <svg className="pptx-slide-preview" viewBox={`0 0 ${SLIDE_W} ${SLIDE_H}`} aria-hidden="true">
